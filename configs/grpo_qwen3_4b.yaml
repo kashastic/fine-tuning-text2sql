@@ -1,0 +1,54 @@
+# GRPO with the execution reward, starting from the best SFT adapter.
+# 10-25 GPU hours; start with data.subset_size small and watch the reward curve
+# before committing to a long run.
+run_name: grpo
+output_dir: outputs/grpo
+seed: 13
+
+model:
+  name: Qwen/Qwen3-4B
+  adapter: outputs/sft-plain/adapter   # REQUIRED -- GRPO from the base model stalls
+  load_in_4bit: true
+  compute_dtype: bfloat16
+  dtype: auto
+  device_map: auto
+  attn_implementation: sdpa
+
+data:
+  train_file: data/processed/train.jsonl
+  subset_size: 3000        # rollouts are the cost; a subset is enough
+
+reward:
+  correct: 1.0             # result set matches gold -- the only big signal
+  executable: 0.10         # query runs
+  formatted: 0.05          # a parseable ```sql block
+  comparison: bird         # set equality, the official BIRD metric
+  timeout: 15.0
+  max_workers: 16
+  include_format_reward: false
+
+grpo:
+  num_generations: 8       # group size; the variance inside a group is the signal
+  max_prompt_length: 3072
+  max_completion_length: 384
+  temperature: 1.0
+  beta: 0.02               # KL to the reference policy
+  num_train_epochs: 1
+  per_device_train_batch_size: 8
+  gradient_accumulation_steps: 4
+  learning_rate: 1.0e-6    # two orders of magnitude below SFT, on purpose
+  lr_scheduler_type: constant_with_warmup
+  warmup_ratio: 0.05
+  logging_steps: 1
+  save_strategy: steps
+  save_steps: 50
+  save_total_limit: 3
+  bf16: true
+  gradient_checkpointing: true
+  optim: paged_adamw_8bit
+  max_grad_norm: 0.5
+  log_completions: true
+  use_vllm: false          # true needs vLLM installed; much faster rollouts
+  vllm_mode: colocate
+  vllm_gpu_memory_utilization: 0.3
+  report_to: [wandb]

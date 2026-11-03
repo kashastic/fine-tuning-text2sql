@@ -1,0 +1,13 @@
+# Dataset construction. Everything downstream reads data/processed/*.jsonl.
+data:
+  datasets: [bird, spider]
+  splits: [train, dev]
+  root: data/raw
+  out_dir: data/processed
+  style: sql              # "sql" or "reasoning"; must match the SFT config
+  max_tables: 8           # schema trimming -- the single biggest lever on
+                          # sequence length, so on training cost
+  sample_values: 3        # distinct values per column, as DDL comments
+  val_size: 300           # held out of BIRD/Spider train, never from dev
+  drop_unexecutable_gold: true
+  seed: 13

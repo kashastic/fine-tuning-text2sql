@@ -1,0 +1,44 @@
+# Variant B: short reasoning, then the SQL block. Build the dataset with
+# `--style reasoning` first, or the targets will not match the system prompt.
+run_name: sft-reasoning
+output_dir: outputs/sft-reasoning
+seed: 13
+
+model:
+  name: Qwen/Qwen3-4B
+  load_in_4bit: true
+  bnb_4bit_quant_type: nf4
+  double_quant: true
+  compute_dtype: bfloat16
+  dtype: auto
+  device_map: auto
+  attn_implementation: sdpa
+
+lora:
+  r: 32
+  alpha: 64
+  dropout: 0.05
+  target_modules: [q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj]
+
+data:
+  train_file: data/processed/train.jsonl
+  val_file: data/processed/val.jsonl
+
+train:
+  max_seq_length: 4096
+  packing: false
+  num_train_epochs: 2
+  per_device_train_batch_size: 2
+  gradient_accumulation_steps: 8      # effective batch 16
+  learning_rate: 1.0e-4
+  lr_scheduler_type: cosine
+  warmup_ratio: 0.03
+  logging_steps: 10
+  save_strategy: epoch
+  save_total_limit: 3
+  eval_strategy: epoch
+  bf16: true
+  gradient_checkpointing: true
+  optim: paged_adamw_8bit
+  max_grad_norm: 1.0
+  report_to: [wandb]

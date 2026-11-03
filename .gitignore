@@ -1,0 +1,29 @@
+# data & artifacts
+data/raw/
+data/processed/
+!data/.gitkeep
+results/**/*.json
+results/**/*.jsonl
+results/**/*.csv
+results/**/*.png
+!results/.gitkeep
+outputs/
+checkpoints/
+wandb/
+*.sqlite
+*.db
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+
+# os
+.DS_Store
