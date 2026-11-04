@@ -135,22 +135,39 @@ Two things it does that matter more than they look:
   is truncated at either trainer's limit.
 
   What that costs, measured over all 1,534 dev prompts: 85.8% of tables and
-  **64.9% of columns** survive, and 49.4% of questions have at least one
-  column hidden. Most of that is harmless -- the hidden column was irrelevant
-  -- but on **165 questions (10.8%) a column the gold query needs is
-  missing**, and the API baseline scores 41.2% on those against 57.6% where
-  the prompt was complete. So trimming costs ~1.8 EX points.
+  **65% of columns** survive, and 49.4% of questions have at least one column
+  hidden. Most of that is harmless -- the hidden column was irrelevant -- but
+  where a column the gold query *needs* goes missing, the API baseline scores
+  ~41% against ~57.5% on complete prompts. Of the 303 questions that lost a
+  table, **none** lost a table the gold needs: table selection is sound, and
+  every real loss is a dropped column.
 
-  The split matters for where to fix it: of the 303 questions that lost a
-  table, **none** lost a table the gold needs, so table selection is sound
-  and every real loss is a dropped *column*. Raising `max_columns` is the
-  wrong fix -- 30 puts p99 at 4,134, past GRPO's 4,096 limit, and raising it
-  for the baseline alone would mean the baseline and the fine-tuned model no
-  longer see the same prompts. Better column *selection* at the same budget
-  is the fix. This matters more for training than for scoring: those same
-  prompts become the SFT and GRPO data, where a schema missing the needed
-  column teaches the model to invent column names and earns ~0 GRPO reward
-  whatever the model does.
+  So column selection runs in three tiers, chosen by measuring which needed
+  columns were being dropped and why:
+
+  1. **Keys** -- primary and foreign -- are never dropped.
+  2. **Columns the question or evidence names verbatim** are never dropped
+     either, and the budget stretches to fit them. This was the largest
+     recoverable loss: 54 of 165 missing columns were *explicitly named in
+     the question* and discarded anyway, because matches used to be filled in
+     schema order until the budget ran out.
+  3. **Everything else competes on match strength**, with schema order
+     breaking ties only, and a 4-character shared prefix counts as a match so
+     "schools that were opened" reaches `OpenDate`.
+
+  That took questions missing a needed column from **165 (10.8%) to 114
+  (7.4%)** while columns kept went 64.9% -> 65.0% -- a 31% cut in the recall
+  loss for 0.1% more prompt. The longest prompt grew 3,671 -> 3,823 tokens,
+  still clear of 4,096.
+
+  Raising `max_columns` instead would be the wrong fix: 30 puts p99 at 4,134,
+  past GRPO's 4,096 limit, and raising it for the baseline alone would mean
+  the baseline and the fine-tuned model no longer see the same prompts. All of
+  this matters more for training than for scoring -- these same prompts become
+  the SFT and GRPO data, where a schema missing the needed column teaches the
+  model to invent column names and earns ~0 GRPO reward whatever it does.
+  The remaining 114 need **value** linking ("directly funded" is a value of
+  `Charter`, not a column name); see `docs/MEASUREMENTS.md`.
 * **Gold filtering** drops training rows whose own gold SQL does not execute.
   Teaching the model to imitate a query that errors is pure noise.
 
@@ -234,6 +251,9 @@ python scripts/merge_lora.py --base Qwen/Qwen3-4B --adapter outputs/grpo/adapter
 
 ```
 configs/            run recipes (data, SFT x2, GRPO) -- the whole run in one file
+docs/
+  MEASUREMENTS.md   every number this repo quotes, what it assumes, and the
+                    decisions behind it -- read this before trusting a figure
 src/text2sql/
   data.py           BIRD / Spider -> one Example shape
   schema.py         DDL from sqlite_master, schema trimming, sample values
@@ -242,12 +262,12 @@ src/text2sql/
   sql_exec.py       read-only SQLite execution with a deadline, result comparison
   metrics.py        EX, breakdowns, self-consistency voting
   rewards.py        GRPO execution reward
-  backends.py       vLLM / OpenAI-compatible / Anthropic / transformers
+  backends.py       vLLM / OpenAI-compatible / hosted OpenAI / Anthropic / transformers
   pricing.py        token and GPU-hour costs for the cost column
 scripts/            download, build, generate, evaluate, train x2, merge,
                     error analysis, latency bench, results table
 serve/              FastAPI service + Gradio demo
-tests/              75 tests on a fixture benchmark; no GPU, no downloads
+tests/              90 tests on a fixture benchmark; no GPU, no downloads
 ```
 
 ## Reproduction

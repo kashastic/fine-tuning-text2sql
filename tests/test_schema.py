@@ -183,3 +183,70 @@ def test_implicit_foreign_key_target_renders_without_a_column_list(tmp_path):
     assert "FOREIGN KEY" in text
     assert "REFERENCES" in text
     assert "None" not in text
+
+
+def test_a_named_column_outranks_the_budget(tmp_path):
+    """A column the question names outright must never be dropped.
+
+    This was the single largest recoverable loss on BIRD dev: 54 of 165
+    missing columns were named in the question or evidence and thrown away
+    anyway, because matches were filled in schema order until the budget ran
+    out. Here the keys alone fill the budget, so the named column only
+    survives if naming it outranks the budget rather than competing with it.
+    """
+    db = tmp_path / "keys.sqlite"
+    keys = ", ".join(f"ref_{i} INTEGER" for i in range(6))
+    fks = ", ".join(f"FOREIGN KEY (ref_{i}) REFERENCES parent (pid)" for i in range(6))
+    extras = ", ".join(f"filler_{i} TEXT" for i in range(20))
+    with sqlite3.connect(db) as conn:
+        conn.execute("CREATE TABLE parent (pid INTEGER PRIMARY KEY)")
+        conn.execute(
+            f"CREATE TABLE child (cid INTEGER PRIMARY KEY, {keys}, "
+            f"settlement_date TEXT, {extras}, {fks})"
+        )
+    schema = database_schema(str(db))
+    kept = select_relevant_columns(
+        schema.tables["child"], "what is the settlement_date", max_columns=4
+    )
+    names = [c.name for c in kept]
+    assert "settlement_date" in names, "a column named in the question was dropped"
+    assert "cid" in names and "ref_0" in names, "keys dropped"
+
+
+def test_column_matching_survives_an_inflected_question_word(tmp_path):
+    """"schools that were opened" has to reach `OpenDate`.
+
+    Exact token equality misses this: OpenDate tokenises to {open, date} and
+    the question says "opened", so the column scored zero and lost its place
+    to whatever happened to sit earlier in the table.
+    """
+    db = tmp_path / "schools.sqlite"
+    extras = ", ".join(f"filler_{i} TEXT" for i in range(30))
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            f"CREATE TABLE schools (sid INTEGER PRIMARY KEY, OpenDate TEXT, {extras})"
+        )
+    schema = database_schema(str(db))
+    kept = select_relevant_columns(
+        schema.tables["schools"], "list schools that were opened after 1991",
+        max_columns=5,
+    )
+    assert "OpenDate" in [c.name for c in kept]
+
+
+def test_a_stronger_match_beats_an_earlier_weaker_one(tmp_path):
+    """Schema order must only break ties, never outrank match strength."""
+    db = tmp_path / "order.sqlite"
+    extras = ", ".join(f"filler_{i} TEXT" for i in range(30))
+    with sqlite3.connect(db) as conn:
+        # `rate_note` sits first and matches weakly (inflected); the exact
+        # two-token match sits last and has to win anyway.
+        conn.execute(
+            f"CREATE TABLE t (id INTEGER PRIMARY KEY, rating_note TEXT, {extras}, "
+            "eligible_rate REAL)"
+        )
+    schema = database_schema(str(db))
+    kept = [c.name for c in select_relevant_columns(
+        schema.tables["t"], "what is the eligible rate", max_columns=3
+    )]
+    assert "eligible_rate" in kept, "the strongest match lost to schema position"

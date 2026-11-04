@@ -162,6 +162,40 @@ def _table_score(table: Table, question_tokens: set[str]) -> float:
     return score
 
 
+def _tokens_match(a: str, b: str) -> bool:
+    """Do two name tokens refer to the same thing?
+
+    Exact equality misses the most common shape in BIRD's questions: the
+    question inflects the word the column does not. "schools that were
+    *opened* after 1991" needs `OpenDate`, whose tokens are {open, date}, and
+    `opened != open` throws the column away. A shared prefix of four
+    characters with similar length catches the inflections (open/opened,
+    enroll/enrollment, test/testing) without collapsing genuinely different
+    words, which a 3-character prefix would.
+    """
+    if a == b:
+        return True
+    if min(len(a), len(b)) < 4 or abs(len(a) - len(b)) > 4:
+        return False
+    shared = 0
+    for ca, cb in zip(a, b):
+        if ca != cb:
+            break
+        shared += 1
+    return shared >= 4
+
+
+def _match_score(name: str, question_tokens: set[str]) -> int:
+    """How strongly does a column name overlap the question? 0 means not at all."""
+    score = 0
+    for token in _name_tokens(name):
+        if token in question_tokens:
+            score += 2  # exact token, the stronger signal
+        elif any(_tokens_match(token, q) for q in question_tokens):
+            score += 1
+    return score
+
+
 def _phrase_hits(name: str, haystack: str) -> bool:
     """Does the question or evidence name this column outright?
 
@@ -180,10 +214,26 @@ def select_relevant_columns(
 ) -> list[Column]:
     """Pick the columns worth showing for one table, in schema order.
 
-    Keys come first and are never dropped: without them a join stops being
-    expressible, and an unanswerable prompt teaches GRPO nothing. Then
-    columns the question or evidence names, then schema order fills the
-    budget -- BIRD's tables tend to lead with the identifying columns.
+    Three tiers, because measuring which needed columns got dropped showed
+    two distinct causes (see docs/MEASUREMENTS.md, M4):
+
+    1. **Keys** -- primary and foreign -- are never dropped. Without them a
+       join stops being expressible, and an unanswerable prompt teaches GRPO
+       nothing.
+    2. **Columns the question or evidence names verbatim** are never dropped
+       either. These were the single largest recoverable loss: 54 of 165
+       missing columns were *explicitly named in the question* and still
+       thrown away, because the old code filled matches in schema order and
+       ran out of budget. A name the user typed is the strongest signal
+       available, so it outranks the budget rather than competing with it.
+    3. **Everything else competes on match strength**, strongest first, and
+       schema order only breaks ties. Filling in schema order was the other
+       half of the bug: a weak match near the top of the table displaced a
+       strong one further down.
+
+    The budget is a floor rather than a ceiling: it stretches to fit tiers 1
+    and 2, since a table whose keys and named columns alone exceed
+    `max_columns` is better rendered wide than rendered useless.
     """
     if max_columns <= 0 or len(table.columns) <= max_columns:
         return list(table.columns)
@@ -193,24 +243,23 @@ def select_relevant_columns(
     key_names = {col for col, _ref_table, _ref_col in table.foreign_keys}
 
     required: set[str] = set()
-    wanted: set[str] = set()
-    for col in table.columns:
-        if col.pk or col.name in key_names:
+    scored: list[tuple[int, int, str]] = []
+    for position, col in enumerate(table.columns):
+        if col.pk or col.name in key_names or _phrase_hits(col.name, haystack):
             required.add(col.name)
-        elif _phrase_hits(col.name, haystack) or (_name_tokens(col.name) & question_tokens):
-            wanted.add(col.name)
+            continue
+        score = _match_score(col.name, question_tokens)
+        # Negative score sorts strongest-first; position breaks ties in
+        # schema order, so the choice stays deterministic across runs.
+        scored.append((-score, position, col.name))
 
-    budget = max(max_columns, len(required))
     kept = set(required)
-    for col in table.columns:  # schema order, so the choice is deterministic
+    budget = max(max_columns, len(kept))
+    for neg_score, _position, name in sorted(scored):
         if len(kept) >= budget:
             break
-        if col.name in wanted:
-            kept.add(col.name)
-    for col in table.columns:
-        if len(kept) >= budget:
-            break
-        kept.add(col.name)
+        del neg_score
+        kept.add(name)
 
     return [col for col in table.columns if col.name in kept]
 
