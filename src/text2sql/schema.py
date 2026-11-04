@@ -9,8 +9,15 @@ wastes most of the training compute. So:
     gold SQL was written against),
   * `select_relevant_tables` keeps the tables the question plausibly needs plus
     their foreign-key neighbours,
+  * `select_relevant_columns` trims *within* a table, which is where BIRD's
+    real cost is: `european_football_2.Match` has 115 columns, and keeping
+    eight such tables whole puts a third of BIRD dev over a 3k prompt budget,
   * `format_schema` renders them, optionally with a few sample values per
     column, which is what lifts accuracy on value-matching questions.
+
+Keys are never dropped. A trimmed table is marked in the rendered DDL with
+the number of columns elided, so the model is told the schema is partial
+rather than being left to infer that a column does not exist.
 """
 
 from __future__ import annotations
@@ -155,6 +162,59 @@ def _table_score(table: Table, question_tokens: set[str]) -> float:
     return score
 
 
+def _phrase_hits(name: str, haystack: str) -> bool:
+    """Does the question or evidence name this column outright?
+
+    BIRD's evidence usually quotes columns verbatim, parentheses and all --
+    "Eligible free rate for K-12 = `Free Meal Count (K-12)` / `Enrollment
+    (K-12)`" -- and those names tokenise badly, so match the whole string.
+    """
+    return len(name) > 2 and name.lower() in haystack
+
+
+def select_relevant_columns(
+    table: Table,
+    question: str,
+    evidence: str = "",
+    max_columns: int = 0,
+) -> list[Column]:
+    """Pick the columns worth showing for one table, in schema order.
+
+    Keys come first and are never dropped: without them a join stops being
+    expressible, and an unanswerable prompt teaches GRPO nothing. Then
+    columns the question or evidence names, then schema order fills the
+    budget -- BIRD's tables tend to lead with the identifying columns.
+    """
+    if max_columns <= 0 or len(table.columns) <= max_columns:
+        return list(table.columns)
+
+    haystack = f"{question} {evidence}".lower()
+    question_tokens = _tokens(f"{question} {evidence}")
+    key_names = {col for col, _ref_table, _ref_col in table.foreign_keys}
+
+    required: set[str] = set()
+    wanted: set[str] = set()
+    for col in table.columns:
+        if col.pk or col.name in key_names:
+            required.add(col.name)
+        elif _phrase_hits(col.name, haystack) or (_name_tokens(col.name) & question_tokens):
+            wanted.add(col.name)
+
+    budget = max(max_columns, len(required))
+    kept = set(required)
+    for col in table.columns:  # schema order, so the choice is deterministic
+        if len(kept) >= budget:
+            break
+        if col.name in wanted:
+            kept.add(col.name)
+    for col in table.columns:
+        if len(kept) >= budget:
+            break
+        kept.add(col.name)
+
+    return [col for col in table.columns if col.name in kept]
+
+
 def select_relevant_tables(
     schema: DatabaseSchema,
     question: str,
@@ -197,12 +257,43 @@ def select_relevant_tables(
     return sorted(set(kept), key=lambda n: order[n])
 
 
+def render_table(table: Table, columns: list[Column]) -> str:
+    """A CREATE TABLE for a subset of columns, with the foreign keys kept.
+
+    Used only when columns were dropped; an untrimmed table keeps the
+    benchmark's own DDL text, which is what the gold SQL was written
+    against.
+    """
+    kept = {col.name for col in columns}
+    lines = [
+        f"  {_quote(col.name)} {col.type}".rstrip() + (" PRIMARY KEY" if col.pk else "")
+        for col in columns
+    ]
+    for col, ref_table, ref_col in table.foreign_keys:
+        if col not in kept:
+            continue
+        # PRAGMA foreign_key_list reports a NULL target for `REFERENCES
+        # parent` with no column list, which means the parent's primary key.
+        # Re-emit it in the same implicit form rather than inventing a name.
+        target = f"{_quote(ref_table)} ({_quote(ref_col)})" if ref_col else _quote(ref_table)
+        lines.append(f"  FOREIGN KEY ({_quote(col)}) REFERENCES {target}")
+    elided = len(table.columns) - len(columns)
+    body = ",\n".join(lines)
+    block = f"CREATE TABLE {_quote(table.name)} (\n{body}\n);"
+    if elided:
+        block += f"\n-- {elided} further column(s) of {table.name} not shown"
+    return block
+
+
 def format_schema(
     schema: DatabaseSchema,
     tables: list[str] | None = None,
     db_path: str | None = None,
     n_sample_values: int = 0,
     use_raw_ddl: bool = True,
+    question: str = "",
+    evidence: str = "",
+    max_columns: int = 0,
 ) -> str:
     """Render the schema as the prompt sees it."""
     names = tables if tables is not None else schema.table_names
@@ -211,17 +302,15 @@ def format_schema(
         table = schema.tables.get(name)
         if table is None:
             continue
-        if use_raw_ddl and table.ddl:
+        columns = select_relevant_columns(table, question, evidence, max_columns=max_columns)
+        trimmed = len(columns) < len(table.columns)
+        if use_raw_ddl and table.ddl and not trimmed:
             block = table.ddl.rstrip().rstrip(";") + ";"
         else:
-            cols = ",\n".join(
-                f"  {_quote(c.name)} {c.type}".rstrip() + (" PRIMARY KEY" if c.pk else "")
-                for c in table.columns
-            )
-            block = f"CREATE TABLE {_quote(name)} (\n{cols}\n);"
+            block = render_table(table, columns)
         if n_sample_values > 0 and db_path:
             lines = []
-            for col in table.columns:
+            for col in columns:
                 values = sample_values(db_path, name, col.name, n_sample_values)
                 if values:
                     lines.append(f"-- {name}.{col.name}: " + ", ".join(values))
@@ -237,10 +326,17 @@ def schema_for_example(
     evidence: str = "",
     max_tables: int = 8,
     n_sample_values: int = 0,
+    max_columns: int = 0,
 ) -> str:
     """The one call the prompt builder needs: trimmed, rendered schema text."""
     schema = database_schema(db_path)
     tables = select_relevant_tables(schema, question, evidence, max_tables=max_tables)
     return format_schema(
-        schema, tables, db_path=db_path, n_sample_values=n_sample_values
+        schema,
+        tables,
+        db_path=db_path,
+        n_sample_values=n_sample_values,
+        question=question,
+        evidence=evidence,
+        max_columns=max_columns,
     )

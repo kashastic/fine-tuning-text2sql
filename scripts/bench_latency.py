@@ -76,6 +76,7 @@ def main() -> int:
     parser.add_argument("--warmup", type=int, default=4)
     parser.add_argument("--max-new-tokens", type=int, default=256)
     parser.add_argument("--max-tables", type=int, default=8)
+    parser.add_argument("--max-columns", type=int, default=0)
     parser.add_argument("--sample-values", type=int, default=3)
     parser.add_argument("--gpu", default="a100-40gb")
     parser.add_argument("--gpu-hourly-usd", type=float, default=None)
@@ -88,7 +89,8 @@ def main() -> int:
         print("[fail] no examples with a database on disk")
         return 1
     prompts = [
-        build_prompt(e, max_tables=args.max_tables, n_sample_values=args.sample_values)
+        build_prompt(e, max_tables=args.max_tables, n_sample_values=args.sample_values,
+                     max_columns=args.max_columns)
         for e in examples
     ]
 

@@ -58,6 +58,7 @@ def build_prompt(
     max_tables: int = 8,
     n_sample_values: int = 0,
     schema_text: str | None = None,
+    max_columns: int = 0,
 ) -> list[dict[str, str]]:
     """Chat messages for one example. `schema_text` overrides schema lookup."""
     if schema_text is None:
@@ -67,6 +68,7 @@ def build_prompt(
             example.evidence,
             max_tables=max_tables,
             n_sample_values=n_sample_values,
+            max_columns=max_columns,
         )
     return [
         {"role": "system", "content": system_prompt(style)},
@@ -90,6 +92,7 @@ def to_sft_record(
     max_tables: int = 8,
     n_sample_values: int = 0,
     schema_text: str | None = None,
+    max_columns: int = 0,
 ) -> dict[str, object]:
     """A chat-format training row: `{"messages": [...]}` plus metadata.
 
@@ -99,6 +102,7 @@ def to_sft_record(
     messages = build_prompt(
         example, style=style, max_tables=max_tables,
         n_sample_values=n_sample_values, schema_text=schema_text,
+        max_columns=max_columns,
     )
     return {
         "messages": messages + [{"role": "assistant", "content": target_completion(example, reasoning)}],

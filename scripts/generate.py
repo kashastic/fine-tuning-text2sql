@@ -48,6 +48,7 @@ def main() -> int:
     parser.add_argument("--data-root", default="data/raw")
     parser.add_argument("--style", choices=["sql", "reasoning"], default="sql")
     parser.add_argument("--max-tables", type=int, default=8)
+    parser.add_argument("--max-columns", type=int, default=0)
     parser.add_argument("--sample-values", type=int, default=3)
     parser.add_argument("--max-new-tokens", type=int, default=512)
     parser.add_argument("--max-model-len", type=int, default=8192)
@@ -79,6 +80,7 @@ def main() -> int:
     print(f"[prep] building {len(examples)} prompts (style={args.style}, max_tables={args.max_tables})")
     prompts = [
         build_prompt(e, style=args.style, max_tables=args.max_tables,
+                     max_columns=args.max_columns,
                      n_sample_values=args.sample_values)
         for e in examples
     ]
@@ -141,6 +143,7 @@ def main() -> int:
         "split": args.split,
         "style": args.style,
         "max_tables": args.max_tables,
+        "max_columns": args.max_columns,
         "sample_values": args.sample_values,
         "num_samples": args.num_samples,
         "temperature": args.temperature,

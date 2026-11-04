@@ -29,7 +29,11 @@ reward:
 
 grpo:
   num_generations: 8       # group size; the variance inside a group is the signal
-  max_prompt_length: 3072
+  max_prompt_length: 4096   # with data.max_columns=20 the longest BIRD dev
+                            # prompt is ~3.6k tokens, so nothing is truncated.
+                            # A truncated prompt hides the schema the answer
+                            # needs, so its reward is ~0 no matter what the
+                            # model does -- dead rollouts that still cost GPU.
   max_completion_length: 384
   temperature: 1.0
   beta: 0.02               # KL to the reference policy

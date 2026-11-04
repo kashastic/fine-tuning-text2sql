@@ -41,6 +41,7 @@ VLLM_URL = os.getenv("T2S_VLLM_URL", "http://localhost:8000/v1")
 DB_ROOT = Path(os.getenv("T2S_DB_ROOT", "data/raw/bird/dev/dev_databases"))
 STYLE = os.getenv("T2S_STYLE", "sql")
 MAX_TABLES = int(os.getenv("T2S_MAX_TABLES", "8"))
+MAX_COLUMNS = int(os.getenv("T2S_MAX_COLUMNS", "0"))
 SAMPLE_VALUES = int(os.getenv("T2S_SAMPLE_VALUES", "3"))
 MAX_NEW_TOKENS = int(os.getenv("T2S_MAX_NEW_TOKENS", "512"))
 EXEC_TIMEOUT = float(os.getenv("T2S_EXEC_TIMEOUT", "15"))
@@ -149,6 +150,7 @@ def generate_sql(request: SQLRequest) -> SQLResponse:
     schema_text = schema_for_example(
         str(path), request.question, request.evidence,
         max_tables=MAX_TABLES, n_sample_values=SAMPLE_VALUES,
+        max_columns=MAX_COLUMNS,
     )
     prompt = build_prompt(example, style=STYLE, schema_text=schema_text)
     generations = backend().generate([prompt], n=1)[0]

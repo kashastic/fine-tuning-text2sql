@@ -95,10 +95,26 @@ reward function reads those straight off the dataset.
 
 Two things it does that matter more than they look:
 
-* **Schema trimming** (`data.max_tables`) keeps the tables the question
-  plausibly needs plus their foreign-key neighbours. A BIRD database can have
-  80 tables; untrimmed prompts blow the context and most of the training budget
-  goes to padding.
+* **Schema trimming** works at two levels, because BIRD's cost is width as
+  much as count. `data.max_tables` keeps the tables the question plausibly
+  needs plus their foreign-key neighbours; `data.max_columns` then trims
+  *within* a table, since `european_football_2.Match` alone has 115 columns.
+  Keys are never dropped -- without them a join stops being expressible --
+  and a trimmed table says in its DDL how many columns were elided, so the
+  model is told the schema is partial rather than inferring a column does
+  not exist. Measured on BIRD dev with the Qwen3 tokenizer:
+
+  | `max_columns` | p50 | p90 | p99 | max | over 3072 | over 4096 | gold columns kept |
+  | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+  | 0 (untrimmed) | 2002 | 4281 | 6651 | 6661 | 33.7% | 17.3% | 99.3% |
+  | **20** (default) | 1958 | 3037 | 3615 | 3631 | 6.3% | 0.0% | 97.6% |
+  | 12 | 1761 | 2585 | 3171 | 3181 | 5.7% | 0.0% | 97.2% |
+
+  Note the p50 barely moves: trimming only bites on the wide tables, so the
+  median prompt is untouched. Below 20 the savings flatten while recall keeps
+  bleeding, which is why 20 is the default. With it, the longest prompt in
+  BIRD dev is 3,671 tokens and the longest prompt-plus-gold 3,828, so nothing
+  is truncated at either trainer's limit.
 * **Gold filtering** drops training rows whose own gold SQL does not execute.
   Teaching the model to imitate a query that errors is pure noise.
 
@@ -232,8 +248,12 @@ the rest.
   nothing reads BIRD dev except evaluation.
 * **An unfair baseline.** One prompt builder, same schema and evidence for every
   model. `tests/test_prompts.py` fails if that stops being true.
-* **Context overflow.** Schema trimming is a config knob applied from week 2, not
-  a patch bolted on in week 4.
+* **Context overflow.** Schema trimming is a config knob applied from week 2,
+  not a patch bolted on in week 4, and it is trimmed by column as well as by
+  table. Untrimmed, a third of BIRD dev overruns GRPO's prompt budget -- and a
+  truncated prompt hides the schema the answer needs, so the reward is ~0
+  however well the model does. Those rollouts teach nothing and still cost GPU
+  time, while the loss curve looks perfectly healthy.
 * **GRPO from the base model.** Refused by default.
 * **Hyperparameter rabbit holes.** Two or three SFT runs is enough; the story
   matters more than one extra point.

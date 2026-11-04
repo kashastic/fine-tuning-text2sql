@@ -41,6 +41,8 @@ def main() -> int:
     parser.add_argument("--out-dir", default=None)
     parser.add_argument("--style", choices=["sql", "reasoning"], default=None)
     parser.add_argument("--max-tables", type=int, default=None)
+    parser.add_argument("--max-columns", type=int, default=None,
+                        help="per-table column budget; 0 keeps every column")
     parser.add_argument("--sample-values", type=int, default=None)
     parser.add_argument("--val-size", type=int, default=None, help="held out from train")
     parser.add_argument("--limit", type=int, default=None)
@@ -56,6 +58,7 @@ def main() -> int:
     out_dir = Path(args.out_dir or cfg.get_path("data.out_dir", "data/processed"))
     style = args.style or cfg.get_path("data.style", "sql")
     max_tables = args.max_tables if args.max_tables is not None else cfg.get_path("data.max_tables", 8)
+    max_columns = args.max_columns if args.max_columns is not None else cfg.get_path("data.max_columns", 0)
     sample_values = args.sample_values if args.sample_values is not None else cfg.get_path("data.sample_values", 3)
     val_size = args.val_size if args.val_size is not None else cfg.get_path("data.val_size", 300)
     limit = args.limit if args.limit is not None else cfg.get_path("data.limit")
@@ -99,6 +102,7 @@ def main() -> int:
                             example,
                             style=style,
                             max_tables=max_tables,
+                            max_columns=max_columns,
                             n_sample_values=sample_values,
                         )
                     )

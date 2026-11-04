@@ -7,6 +7,9 @@ data:
   style: sql              # "sql" or "reasoning"; must match the SFT config
   max_tables: 8           # schema trimming -- the single biggest lever on
                           # sequence length, so on training cost
+  max_columns: 20         # per-table column budget; keys are never dropped.
+                          # 0 keeps every column, which puts ~1/3 of BIRD dev
+                          # over a 3k-token prompt budget
   sample_values: 3        # distinct values per column, as DDL comments
   val_size: 300           # held out of BIRD/Spider train, never from dev
   drop_unexecutable_gold: true
