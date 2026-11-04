@@ -69,6 +69,7 @@ def main() -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
     rng = random.Random(seed)
 
+    incomplete: list[str] = []
     for split in splits:
         rows: list[dict] = []
         dropped = {"missing_db": 0, "bad_gold": 0, "schema_error": 0}
@@ -120,8 +121,15 @@ def main() -> int:
             write_jsonl(out_dir / f"{split}.jsonl", rows)
             print(f"[write] {out_dir / f'{split}.jsonl'}: {len(rows)} rows")
         print(f"[drop ] {split}: {dropped}")
+        if split == "dev" and any(dropped.values()):
+            # A dev row lost here is a question the final numbers silently
+            # never answer, so EX stops being comparable with published
+            # BIRD results. Loud failure beats a quietly shortened eval set.
+            print(f"[fail ] {split}: {sum(dropped.values())} rows dropped from an "
+                  f"evaluation split; fix the cause rather than scoring a subset")
+            incomplete.append(split)
 
-    return 0
+    return 1 if incomplete else 0
 
 
 if __name__ == "__main__":

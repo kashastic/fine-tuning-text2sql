@@ -59,7 +59,17 @@ class DatabaseSchema:
 
 
 def _quote(name: str) -> str:
-    return f'"{name}"' if re.search(r"\W", name) else name
+    """Quote an identifier, always.
+
+    Quoting only when a name looks unusual is the bug that drops BIRD's
+    `financial` database: its main table is called `order`, which is a
+    reserved word, so `PRAGMA table_info(order)` is a syntax error even
+    though the name is plain. There is no cheap test for "is this a
+    keyword" -- SQLite has ~140 of them -- and quoting a name that did not
+    need it is harmless, so quote everything and escape embedded quotes.
+    """
+    escaped = name.replace('"', '""')
+    return f'"{escaped}"'
 
 
 @lru_cache(maxsize=256)
@@ -95,7 +105,18 @@ def database_schema(db_path: str) -> DatabaseSchema:
 
 
 def sample_values(db_path: str, table: str, column: str, limit: int = 3) -> list[str]:
-    """A few distinct non-null values, for value-matching questions."""
+    """A few distinct non-null values, for value-matching questions.
+
+    The column is checked against the schema rather than left to fail at
+    query time. SQLite resolves a double-quoted name it does not recognise
+    as a *string literal* instead of raising, so `SELECT DISTINCT "nope"`
+    cheerfully returns the word "nope" once per row -- which would land in
+    the prompt as a sample value the database does not contain.
+    """
+    schema = database_schema(db_path)
+    known = schema.tables.get(table)
+    if known is None or column not in {c.name for c in known.columns}:
+        return []
     uri = f"file:{Path(db_path).as_posix()}?mode=ro"
     try:
         with sqlite3.connect(uri, uri=True) as conn:
