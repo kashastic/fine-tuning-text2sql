@@ -46,3 +46,24 @@ def test_reasoning_target_puts_sql_last(shop_example):
     content = record["messages"][-1]["content"]
     assert content.startswith("Join orders to customer.")
     assert content.rstrip().endswith("```")
+
+
+def test_anthropic_backend_says_what_is_missing_without_credentials(monkeypatch):
+    """The SDK resolves credentials on first request, deep in a header builder.
+
+    Without this check the baseline builds all 1,534 prompts and then dies in
+    a TypeError from inside the client, which reads like a bug in this repo.
+    """
+    import pytest
+
+    from text2sql.backends import build_backend
+
+    for var in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"):
+        monkeypatch.delenv(var, raising=False)
+
+    try:
+        build_backend("anthropic", model="claude-opus-5-5")
+    except RuntimeError as exc:
+        assert "ANTHROPIC_API_KEY" in str(exc)
+    except ImportError:
+        pytest.skip("anthropic SDK not installed")

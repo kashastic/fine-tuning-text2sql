@@ -236,11 +236,17 @@ in the table can always be traced back to the exact command and prompts.
 | Zero-shot + SFT evaluation sweeps | ~1 GPU hour each | €0.50–1.50 |
 | SFT run | 3–6 GPU hours | €2–9 |
 | GRPO run | 10–25 GPU hours | €5–35 |
-| API baseline, 1,534 BIRD dev questions | ~4.5M input tokens | €15–25 |
+| API baseline, 1,534 BIRD dev questions | 2.9M prompt tokens (measured) | $19.65 opus-5-5 / $9.82 sonnet-5-5 / $0.49 haiku-5-5 |
 
 Budget 3–4 SFT runs and 2 GRPO runs: €50–100 of rented GPU in total. Run the
 API baseline with `LIMIT=200` first, check the prompts look right, then spend
 the rest.
+
+The API baseline needs an `ANTHROPIC_API_KEY` from console.anthropic.com;
+API billing is separate from a Claude subscription, and it is the only part
+of this project that needs a key at all. The token count above is measured
+from `data/processed/dev.jsonl` at `max_columns: 20`, so it moves if you
+change the schema budget.
 
 ## Pitfalls this repo is built to avoid
 

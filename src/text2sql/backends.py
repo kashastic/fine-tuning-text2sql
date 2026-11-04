@@ -213,8 +213,20 @@ class AnthropicBackend:
         self.max_workers = max_workers
         self.max_retries = max_retries
         self._anthropic = anthropic
-        # Picks up ANTHROPIC_API_KEY, or an `ant auth login` profile.
-        self.client = anthropic.Anthropic(timeout=timeout, max_retries=0)
+        # Picks up ANTHROPIC_API_KEY, or an `ant auth login` profile. The SDK
+        # only resolves credentials on the first request, which would surface
+        # as a TypeError from deep inside its header builder after the prompts
+        # are already built -- so fail here, before any work or spend.
+        try:
+            self.client = anthropic.Anthropic(timeout=timeout, max_retries=0)
+            self.client.api_key or self.client.auth_token or self.client._auth_headers  # noqa: B018
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(
+                "no Anthropic credentials found. Set ANTHROPIC_API_KEY (create a key "
+                "at console.anthropic.com -- API billing is separate from a Claude "
+                "subscription), or run `ant auth login`. The API baseline is the only "
+                "part of this project that needs one."
+            ) from exc
         self._supports_output_config = effort is not None
 
     def _request(self, messages: Messages) -> Generation:
