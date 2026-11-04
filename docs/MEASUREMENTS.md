@@ -25,6 +25,7 @@ These apply to every number below.
 | A5 | **Prompts are identical across every model compared.** One builder, `text2sql.prompts.build_prompt`, same schema, evidence and sample values. | This is the whole validity of the comparison. A model given fuller schemas would win on the prompt, not the task. | `tests/test_prompts.py` fails if the builders diverge. |
 | A6 | **`max_tables: 8`, `max_columns: 20`, `sample_values: 3`** for every run quoted here. | Changing any of them changes both prompt length and recall, so numbers are not comparable across settings. | `configs/data.yaml`; `results/<run>/run.yaml` records what a run used. |
 | A7 | Latency figures are **hosted-API round trips from a laptop at 8-way concurrency**. | They are *not* comparable to a self-hosted GPU's latency, and they move with network conditions and concurrency. | `--max-workers`; the real comparison comes from `make latency` against the served model. |
+| A12 | **The prompted baseline is sampled, not greedy**, so a single-run EX figure carries a **+/-1.5 point** noise band and sub-2-point differences mean nothing (M12). | Any ablation smaller than that needs k runs, not one. | Re-run and compare; the API rejects `temperature=0`. |
 | A8 | BIRD dev is **never trained on**. The validation split comes out of train. | Contamination would invalidate every EX number in this repo. | `data.val_size` in `configs/data.yaml`. |
 
 ---
@@ -128,16 +129,62 @@ Result, same measurement as M4:
 So a **31% cut in the recall loss for ~0.1% more columns**, and nothing
 truncates at either trainer limit.
 
-**The EX gain is not measured.** Coverage is a prompt property; changing it
-cannot retroactively change answers in a completed run. Re-measuring EX means
-re-running the baseline (~$0.77 on nano). Upper-bound estimate: the 51
-newly-complete questions move from the incomplete-prompt rate (~34-41%) to
-the complete-prompt rate (~57.5%), worth roughly **+0.8 EX points**. Quoted as
-an estimate, not a result.
+**EX effect: measured, and it is not significant.** Re-ran nano on the new
+prompts (`results/api-baseline-v2/`, $0.77): EX **56.19%** against 55.80%,
+so **+0.39 points** against an estimate of +0.8. Paired over the same 1,534
+questions: 76 answers went wrong -> right, **70 went right -> wrong**, net +6
+questions, exact McNemar **p = 0.679**. That is indistinguishable from noise.
+
+Splitting the churn by whether the prompt actually changed (the old selector
+was recovered from git to diff the column sets) is what explains it:
+
+| | n | wrong->right | right->wrong | net | churn |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| prompt byte-identical | 1,283 | 65 | 64 | +1 | **10.1%** |
+| prompt changed | 251 | 11 | 6 | +5 | 6.8% |
+
+So the fix contributed net +5 questions on the 251 prompts it touched
+(directionally right, still not significant on its own), and the other 129
+flips are the API disagreeing with itself. **Honest statement: coverage
+improved measurably (M4 -> M11), its accuracy effect is positive in direction
+and below this setup's noise floor.** Do not quote +0.39 as a gain.
 
 Note on comparability: M2's "6.3% over 3072" came from a 300-example sample;
 the post-fix full-dev figure is 8.7%. Those are different populations, not a
 regression -- 0% exceed 4,096 either way.
+
+### M12 — The noise floor: this baseline cannot be run twice (measured)
+
+The most consequential measurement here, because it bounds what every other
+comparison in this project can claim.
+
+**gpt-5.4-nano disagrees with itself on 10.1% of BIRD dev given
+byte-identical prompts** (129 of 1,283 answers flipped between two runs,
+net +1). The cause is not subtle: the API refuses greedy decoding.
+
+```
+temperature=0 -> 400  "Unsupported value: 'temperature' does not support 0
+                       with this model. Only the default (1) value is supported."
+top_p=0       -> 400  "Unsupported parameter: 'top_p' is not supported with this model."
+seed=13       -> 200  (accepted; documented as best-effort only)
+```
+
+Eight identical calls to a trivial prompt returned 2 distinct answers. So the
+prompted baseline is **sampled at temperature 1 by force**, not greedy.
+
+Consequence, as a usable rule: with ~129 discordant pairs split near evenly,
+the standard error on a net difference is about `sqrt(129)/1534` ~ **0.74 EX
+points, so a 2-sigma band of roughly +/-1.5 points.** On this backend, **a
+single-run EX difference under about 2 points is not evidence of anything.**
+
+Mitigations, in order of honesty: pass `seed` (now done, best-effort);
+report the band; for a number that has to be defended, average over k runs
+(the standard error falls as `1/sqrt(k)`) or use self-consistency, which
+turns the sampling into a feature.
+
+This does not threaten the project's headline claim -- "+10 EX over the base
+model" is far outside the band -- but it does mean small ablations
+(reasoning-vs-plain SFT, a schema-budget tweak) need more than one run each.
 
 ### M5 — gpt-5.4-nano prompted baseline (measured)
 
@@ -264,6 +311,11 @@ into prompts as real sample values.
 the length savings flatten while recall keeps bleeding; above 24 the p99
 crosses GRPO's prompt limit.
 
+**D14 — Quote the noise band, and never a sub-2-point single-run gain.** The
+temptation after the M11 fix was to report "+0.39 EX". It is not a gain; it
+is inside the band (M12). Pass `seed` for best-effort reproducibility, say
+that it is best-effort, and average over runs when a number has to hold up.
+
 **D13 — Naming outranks the budget; match strength outranks schema order.**
 The two halves of the M11 defect. A name the user typed is the strongest
 signal available, so it should not compete for space with weak matches, and
@@ -324,8 +376,11 @@ failure this repo claims to prevent, and silent.
   index of distinct values for low-cardinality text columns, matched against
   the question's literals. Not built -- it is a real design change, and the
   per-database index has to be cached or it will dominate dataset build time.
-* The **EX gain from M11 is an estimate (+0.8), not a measurement.** It needs
-  a baseline re-run to confirm.
+* **Every future ablation needs k runs, not one** (M12). The single-run noise
+  band is +/-1.5 EX points on this backend, and nothing currently averages
+  over runs. `--seed` is wired through but is best-effort.
+* **Reasoning-token accounting needs `completion_tokens_details` stored** in
+  `generations.jsonl` before M9 can be upgraded from "weak" to measured.
 * **Reasoning-token accounting** is unverified (M9).
 * The **zero-shot Qwen3-4B** row is unmeasured; it needs a GPU, and it is the
   number the project's "+10 EX" success criterion is measured against.

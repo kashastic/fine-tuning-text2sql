@@ -143,3 +143,29 @@ def test_openai_backend_retries_429_but_not_400(monkeypatch):
     assert len(calls) == 1  # gave up at once
     # The response body travels with the error, or a 400 is undebuggable.
     assert "choices" in out[0].error
+
+
+def test_openai_api_payload_carries_a_seed_when_given(monkeypatch):
+    """The only reproducibility lever this API leaves us.
+
+    It rejects temperature=0 ("only the default (1) value is supported") and
+    rejects top_p, so generation is sampled whether we want it or not; two
+    runs over identical prompts disagreed on 10.1% of BIRD dev. The seed is
+    best-effort, but omitting it entirely would be giving up for free.
+    """
+    import pytest
+
+    try:
+        import httpx  # noqa: F401
+    except ImportError:
+        pytest.skip("httpx not installed")
+
+    from text2sql.backends import build_backend
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-only-not-a-real-key")
+    seeded = build_backend("openai-api", model="gpt-5.4-nano", seed=13)
+    assert seeded._payload([{"role": "user", "content": "hi"}], n=1)["seed"] == 13
+    # and no seed key at all when none was asked for, rather than a null
+    plain = build_backend("openai-api", model="gpt-5.4-nano")
+    assert "seed" not in plain._payload([{"role": "user", "content": "hi"}], n=1)
+    assert "temperature" not in seeded._payload([{"role": "user", "content": "hi"}], n=1)

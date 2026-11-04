@@ -69,6 +69,9 @@ def main() -> int:
                              "is model-specific (gpt-5.4-nano: none/low/medium/"
                              "high/xhigh) and a wrong one is a 400")
     parser.add_argument("--max-workers", type=int, default=8)
+    parser.add_argument("--seed", type=int, default=13,
+                        help="openai-api backend only, and best-effort: that "
+                             "API refuses temperature=0, so runs are sampled")
     parser.add_argument("--results-dir", default="results")
     parser.add_argument("--run-name", required=True)
     args = parser.parse_args()
@@ -111,10 +114,13 @@ def main() -> int:
             "max_workers": args.max_workers,
         }
     elif args.backend == "openai-api":
-        # No temperature: the hosted reasoning models reject a non-default one.
+        # No temperature: the hosted reasoning models reject a non-default
+        # one, so this backend samples at temperature 1 and a seed is the only
+        # (best-effort) lever on reproducibility.
         backend_kwargs |= {
             "reasoning_effort": args.reasoning_effort,
             "max_workers": args.max_workers,
+            "seed": args.seed,
         }
         if args.base_url:
             backend_kwargs["base_url"] = args.base_url
@@ -170,6 +176,7 @@ def main() -> int:
         "temperature": args.temperature if args.backend != "openai-api" else None,
         "effort": args.effort if args.backend == "anthropic" else None,
         "reasoning_effort": args.reasoning_effort if args.backend == "openai-api" else None,
+        "seed": args.seed if args.backend == "openai-api" else None,
         "n_examples": len(examples),
         "wall_seconds": round(wall, 2),
         "questions_per_second": round(len(examples) / wall, 4),

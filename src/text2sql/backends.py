@@ -247,6 +247,7 @@ class OpenAIAPIBackend(OpenAICompatBackend):
         api_key: str | None = None,
         reasoning_effort: str | None = "low",
         max_new_tokens: int = 1024,
+        seed: int | None = None,
         **kwargs: Any,
     ) -> None:
         key = api_key or os.getenv("OPENAI_API_KEY")
@@ -263,6 +264,7 @@ class OpenAIAPIBackend(OpenAICompatBackend):
             max_new_tokens=max_new_tokens, **kwargs,
         )
         self.reasoning_effort = reasoning_effort
+        self.seed = seed
 
     def _payload(self, messages: Messages, n: int) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -275,6 +277,14 @@ class OpenAIAPIBackend(OpenAICompatBackend):
         }
         if self.reasoning_effort:
             payload["reasoning_effort"] = self.reasoning_effort
+        if self.seed is not None:
+            # Best-effort only, and the provider says so. This model refuses
+            # temperature=0 ("only the default (1) is supported") and rejects
+            # top_p, so greedy decoding is impossible and the baseline is
+            # sampled whether we like it or not: two runs over identical
+            # prompts disagreed on 10.1% of BIRD dev. A seed narrows that; it
+            # does not close it. See docs/MEASUREMENTS.md, M12.
+            payload["seed"] = self.seed
         return payload
 
 

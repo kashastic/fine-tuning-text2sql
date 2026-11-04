@@ -27,7 +27,7 @@ from `results/*/summary.json`.
 | Qwen3-4B | SFT + GRPO | | | | | |
 | Qwen3-4B | SFT + GRPO + self-consistency (8) | | | | | |
 | gpt-5.4-mini | Prompted (API baseline) | 60.89 | 67.35 / 51.29 / 50.34 | | 2713 | 1.884 |
-| gpt-5.4-nano | Prompted (API baseline) | 55.80 | 63.03 / 45.26 / 43.45 | | 2938 | 0.464 |
+| gpt-5.4-nano | Prompted (API baseline) | 56.19 | 63.03 / 45.91 / 45.52 | | 2702 | 0.462 |
 
 Execution accuracy (EX) uses the official BIRD metric: run both queries, compare
 the result sets as sets.
@@ -42,7 +42,15 @@ schema linking and multi-join reasoning live.
 The two models agree more than the gap suggests: 51.4% of questions both get
 right, 34.7% neither does, and an oracle picking the better of the two would
 score 65.25%. That 34.7% shared-failure core is the real target — it is not
-fixed by spending more on a bigger prompted model. Two of BIRD's own gold queries time out at the 30s
+fixed by spending more on a bigger prompted model.
+
+**Read every single-run figure here with a ±1.5 point band.** This API
+refuses `temperature=0` (*"only the default (1) value is supported"*) and
+rejects `top_p`, so the baseline is sampled by force: two runs over
+byte-identical prompts disagreed on **10.1%** of BIRD dev. A `--seed` is
+passed and is best-effort only. The 5.09-point nano/mini gap is well outside
+the band; a sub-2-point difference from one run pair is not evidence of
+anything. `docs/MEASUREMENTS.md` has the arithmetic. Two of BIRD's own gold queries time out at the 30s
 deadline under a loaded machine and so count against every model alike, which
 caps attainable EX at 99.87%; `summary.json` records that as
 `gold_unexecutable`. Its p95 latency is a hosted-API round trip from this
@@ -160,6 +168,13 @@ Two things it does that matter more than they look:
   loss for 0.1% more prompt. The longest prompt grew 3,671 -> 3,823 tokens,
   still clear of 4,096.
 
+  Re-running the baseline on the new prompts moved EX 55.80% -> 56.19%, which
+  is **inside the noise band and is not claimed as a gain**: 76 answers
+  improved and 70 regressed (McNemar p = 0.68). The coverage improvement is
+  measured; its accuracy effect is positive in direction only. It is kept
+  because the same prompts are the training data, where a missing column is
+  not noise but a wrong label.
+
   Raising `max_columns` instead would be the wrong fix: 30 puts p99 at 4,134,
   past GRPO's 4,096 limit, and raising it for the baseline alone would mean
   the baseline and the fine-tuned model no longer see the same prompts. All of
@@ -267,7 +282,7 @@ src/text2sql/
 scripts/            download, build, generate, evaluate, train x2, merge,
                     error analysis, latency bench, results table
 serve/              FastAPI service + Gradio demo
-tests/              90 tests on a fixture benchmark; no GPU, no downloads
+tests/              91 tests on a fixture benchmark; no GPU, no downloads
 ```
 
 ## Reproduction
