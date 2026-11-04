@@ -119,6 +119,13 @@ def unpack(archive: Path, dest: Path) -> None:
     flatten(dest)
     # BIRD's archives nest the databases in a second zip.
     for inner in sorted(dest.rglob("*_databases.zip")):
+        # Skip macOS AppleDouble stubs. BIRD's train archive carries a
+        # `._train_databases.zip` beside the real one: a resource-fork file
+        # holding metadata, not an archive, so opening it raises BadZipFile
+        # after a 9 GB download has already succeeded. Anything under
+        # __MACOSX/ is the same thing in directory form.
+        if inner.name.startswith("._") or "__MACOSX" in inner.parts:
+            continue
         if (inner.parent / inner.stem).is_dir():
             print(f"[skip ] {inner.name} already unpacked")
             continue

@@ -294,6 +294,50 @@ This does not threaten the project's headline claim -- "+10 EX over the base
 model" is far outside the band -- but it does mean small ablations
 (reasoning-vs-plain SFT, a schema-budget tweak) need more than one run each.
 
+### M13 — Train/dev separation (measured, was G1)
+
+Checked directly rather than trusted as BIRD's documented design:
+
+| | questions | databases |
+| --- | ---: | ---: |
+| BIRD train | 9,428 | 69 |
+| BIRD dev | 1,534 | 11 |
+
+**Databases appearing in both: 0.** Identical question strings in both: **0**.
+So a dev answer cannot be memorised from train -- the dev schemas are not in
+train at all. This is the strongest of the anti-memorisation protections and
+it is now verified, not assumed.
+
+### M14 — The training splits, and what gold filtering removes (measured)
+
+Built from BIRD train at `max_columns: 20`:
+
+| split | rows | source |
+| --- | ---: | --- |
+| train | **8,700** | BIRD train, minus the validation holdout and bad gold |
+| val | **300** | held out of **train** (A8), never from dev |
+| dev | **1,534** | evaluation only, nothing dropped |
+
+**428 train rows (4.5%) were dropped as `bad_gold`.** Classified on a random
+1,200-row sample (46 failures, 3.8%), which is why they fail:
+
+| cause | share of failures | example |
+| --- | ---: | --- |
+| **genuine annotation error** | **83%** | `no such column: T2.CompanyName`, `no such table: Customer and Suppliers by City` |
+| rejected by our sandbox | 15% | `non-SELECT or stacked statement` |
+| timeout | **2%** | one row |
+
+So the dropped rows are overwhelmingly BIRD's own broken annotations, not
+artifacts of our deadline -- scaled up, roughly 9 of the 428 are recoverable
+timeouts. Dropping them is correct: training a model to imitate a query that
+errors is pure noise. This also corroborates M10's annotation-error finding
+from the data rather than from the paper.
+
+One honest caveat: the 15% rejected for being non-SELECT or stacked (~64
+rows) are excluded by **our policy**, not by being wrong. The read-only
+single-statement sandbox is a deliberate safety choice; those golds are
+simply outside what this project will execute.
+
 ## 3. Decisions
 
 **D1 — Always quote identifiers.** Quoting only unusual-looking names made
@@ -376,7 +420,7 @@ and three of them are structural rather than chosen.
 
 | | Protection | Strength |
 | --- | --- | --- |
-| G1 | **Train and dev use disjoint databases.** BIRD's design: dev has 11 databases, train ~69 different ones. A dev answer cannot be memorised from train, because the dev schemas are not in train. | Structural, the strongest of these. **Unverified** -- confirm once train is downloaded. |
+| G1 | **Train and dev use disjoint databases.** 9,428 train questions over 69 databases, 1,534 dev over 11, **zero overlap**, and zero identical question strings. A dev answer cannot be memorised from train, because the dev schemas are not in train at all. | Structural, the strongest of these. **Verified -- see M13.** |
 | G2 | `data.val_size: 300` is held out of **train**, never from dev. | Chosen; see A8. |
 | G3 | **QLoRA is itself a regulariser.** Rank 32, dropout 0.05, 7 projection modules: well under 1% of weights are trainable, with far less capacity to memorise than full fine-tuning. Two epochs. | Chosen. |
 | G4 | **GRPO does not imitate labels at all.** The reward is whether the model's *own* query returns the gold result rows, with `beta: 0.02` KL to the reference policy. It learns from outcomes, not from copying strings. | Structural to the method. |
@@ -435,6 +479,3 @@ Ordered by what would change a conclusion, not by effort.
    `completion_tokens_details` stored in `generations.jsonl`.
 6. `results/RESULTS.md`'s **latency column mixes cost models** -- hosted API
    round trips against (eventually) a self-hosted server. A7 applies.
-7. **G1 is unverified**: that BIRD's train and dev databases are disjoint is
-   its documented design, not something this repo has checked. Confirm once
-   train is built.
