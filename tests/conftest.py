@@ -139,6 +139,15 @@ def data_root(tmp_path_factory: pytest.TempPathFactory) -> Path:
     }]
     (spider / "train_spider.json").write_text(json.dumps(spider_questions), encoding="utf-8")
     (spider / "dev.json").write_text(json.dumps(spider_questions), encoding="utf-8")
+    # Spider's test databases live in `test_database/`, not `database/`, and
+    # nothing but a separate directory here would catch a loader that sends
+    # every split to the same place.
+    _build_db(spider / "test_database" / "depot" / "depot.sqlite", SHOP_DDL)
+    (spider / "test.json").write_text(json.dumps([{
+        "db_id": "depot",
+        "question": "How many products are in the hardware category?",
+        "query": "SELECT count(*) FROM product WHERE category = 'hardware'",
+    }]), encoding="utf-8")
     return root
 
 

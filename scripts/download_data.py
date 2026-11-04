@@ -37,7 +37,13 @@ SOURCES: dict[str, dict[str, str]] = {
         "home": "https://bird-bench.github.io/",
     },
     "spider": {
-        "url": "",  # Google Drive; download by hand and pass --archive
+        # Spider is published as a Google Drive file rather than a plain
+        # download, but Drive's `usercontent` host serves it to a script when
+        # `confirm=t` stands in for the "file is too large to virus-scan"
+        # interstitial. This is the id the official page links to; if it rots,
+        # the --archive path below still works with a hand-downloaded zip.
+        "url": "https://drive.usercontent.google.com/download"
+               "?id=1403EGqzIDoHMdQF4c9Bkyl7dZLZ5Wt6J&export=download&confirm=t",
         "dest": "spider",
         "home": "https://yale-lily.github.io/spider",
     },
@@ -113,6 +119,17 @@ def flatten(dest: Path) -> None:
 
 def unpack(archive: Path, dest: Path) -> None:
     dest.mkdir(parents=True, exist_ok=True)
+    # A host that answers a download with an HTML page -- a login wall, a
+    # "file too large to scan" interstitial, a rate limit -- still produces a
+    # file of plausible size, and the only symptom is BadZipFile several
+    # hundred megabytes later. Check the magic bytes and say what arrived.
+    with archive.open("rb") as fh:
+        magic = fh.read(2)
+    if magic != b"PK":
+        head = archive.read_bytes()[:200].decode("utf-8", "replace").strip()
+        print(f"[fail] {archive} is not a zip (starts with {magic!r}); the "
+              f"server likely sent a web page instead:\n       {head[:160]}")
+        raise SystemExit(1)
     print(f"[unzip] {archive.name} -> {dest}")
     with zipfile.ZipFile(archive) as zf:
         zf.extractall(dest)
@@ -136,7 +153,15 @@ def unpack(archive: Path, dest: Path) -> None:
 
 def verify(data_root: Path) -> int:
     problems = 0
-    for name, split in (("bird", "train"), ("bird", "dev"), ("spider", "train"), ("spider", "dev")):
+    splits = (
+        ("bird", "train"), ("bird", "dev"),
+        ("spider", "train"), ("spider", "dev"),
+        # Spider's test split is never trained on and never iterated against
+        # (docs/MEASUREMENTS.md, D15), but it still has to be *present* and
+        # intact, and its databases live in their own directory.
+        ("spider", "test"),
+    )
+    for name, split in splits:
         try:
             examples = load_dataset(name, data_root=data_root, split=split)
         except FileNotFoundError:

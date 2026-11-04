@@ -90,7 +90,7 @@ half-finished.
 ### Week 1 — baselines
 
 ```bash
-make data                      # BIRD train + dev into data/raw/
+make data                      # BIRD train+dev and Spider into data/raw/ (~9.1 GB)
 make verify                    # questions and SQLite files line up
 make baseline-zeroshot         # base model, BIRD dev
 make baseline-api LIMIT=200    # the prompted baseline, same prompts
@@ -196,10 +196,57 @@ Two things it does that matter more than they look:
   checkpoint means shipping an overfitted second epoch by default, and two
   eval points cannot show a loss curve turning.
 * **Gold filtering** drops training rows whose own gold SQL does not execute.
-  Teaching the model to imitate a query that errors is pure noise.
+  Teaching the model to imitate a query that errors is pure noise. It removes
+  431 of 16,428 rows (2.6%), and the split tells you something about the two
+  benchmarks: **4.5% of BIRD's golds are unexecutable against 0.04% of
+  Spider's.** Sampling 1,200 BIRD rows to classify the failures put 83% on
+  genuine annotation errors (`no such column: T2.CompanyName`), 15% on
+  statements our read-only sandbox refuses, and 2% on the timeout. Spider's
+  three are all annotation errors too -- a phantom table, and twice an
+  `ORDER BY` before an `INTERSECT` that SQLite will not parse. So the
+  deadline and the sandbox policy are not what is throwing data away; BIRD's
+  annotation quality is.
 
-`data.val_size` holds out a validation split from **train**. BIRD dev is never
-touched until final evaluation.
+### What is held out, and from what
+
+The project trains on two benchmarks and reports on three splits, so "held
+out" needs to mean something more precise than "not in train":
+
+| split | rows | role |
+| --- | ---: | --- |
+| train | 15,697 | BIRD train + Spider train, minus val and bad gold |
+| val | 300 | held out of **train**, for checkpoint selection |
+| BIRD dev | 1,534 | the headline number |
+| Spider dev | 1,034 | held-out **databases**, the generalisation check |
+| Spider test | 2,147 | held out of training *and* of the iteration loop |
+
+Every pair of these is database-disjoint -- verified, not assumed: BIRD train
+and dev share 0 databases, Spider train and dev share 0, and BIRD and Spider
+share 0 with each other. A dev answer cannot be memorised from train because
+the dev schemas are not in train at all.
+
+Two consequences worth being blunt about:
+
+* **Spider dev measures held-out databases, not cross-benchmark transfer.**
+  Putting Spider train into SFT buys 7,000 examples over 140 extra schemas,
+  which is the cheapest defence against learning BIRD's conventions instead
+  of SQL. The cost is that Spider dev is no longer a foreign benchmark. One
+  SFT run gives you one or the other; measuring true transfer needs a
+  second BIRD-only run, which does not fit the compute budget.
+* **Spider test is the only number nothing was tuned against.** It is
+  excluded from training *and* from every ablation, checkpoint choice and
+  prompt tweak, then reported once on the final model. That is why there is
+  deliberately no `make` target for it -- `make generalise` scores Spider dev,
+  and spending the test set is a decision taken by hand:
+
+  ```bash
+  python scripts/generate.py --backend vllm --model Qwen/Qwen3-4B \
+      --lora outputs/grpo/adapter --dataset spider --split test \
+      --max-columns 20 --run-name final-spider-test
+  ```
+
+  The discipline costs nothing. Breaking it costs the number its meaning,
+  quietly and without any error.
 
 ### Week 3 — supervised fine-tuning
 
@@ -294,7 +341,7 @@ src/text2sql/
 scripts/            download, build, generate, evaluate, train x2, merge,
                     error analysis, latency bench, results table
 serve/              FastAPI service + Gradio demo
-tests/              92 tests on a fixture benchmark; no GPU, no downloads
+tests/              95 tests on a fixture benchmark; no GPU, no downloads
 ```
 
 ## Reproduction

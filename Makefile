@@ -13,6 +13,12 @@ API_MODEL    ?= gpt-5.4-nano
 MAX_COLUMNS  ?= 20
 DATASET      ?= bird
 SPLIT        ?= dev
+# `make generalise` scores a fine-tuned adapter on Spider dev. There is
+# deliberately no target for Spider *test*: it is held out of training and of
+# the iteration loop (docs/MEASUREMENTS.md, D15), so spending it is a one-off
+# decision taken by hand, not something a tab-complete can do by accident.
+ADAPTER      ?=
+RUN_NAME     ?= spider-dev
 DATA_ROOT    ?= data/raw
 RESULTS      ?= results
 GPU          ?= a100-40gb
@@ -26,7 +32,7 @@ LIMIT_FLAG := $(if $(LIMIT),--limit $(LIMIT),)
 
 .PHONY: help install install-train install-serve data verify dataset dataset-reasoning \
         baseline-zeroshot baseline-api sft sft-reasoning grpo merge serve api demo \
-        eval errors latency results test lint clean
+        eval generalise errors latency results test lint clean
 
 help:
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
@@ -38,8 +44,8 @@ install-train:    ## add the training stack (GPU box)
 install-serve:    ## add vLLM + FastAPI + the demo (GPU box)
 	$(PY) -m pip install -e ".[serve,demo,viz]"
 
-data:             ## download BIRD (and verify)
-	$(PY) scripts/download_data.py --dataset bird-dev --dataset bird-train
+data:             ## download BIRD and Spider (and verify)
+	$(PY) scripts/download_data.py --dataset bird-dev --dataset bird-train --dataset spider
 verify:           ## check questions and SQLite files line up
 	$(PY) scripts/download_data.py --verify-only
 
@@ -90,6 +96,13 @@ demo:             ## week 6: the Gradio demo (needs `make api` running)
 RUN ?= $(RESULTS)/zeroshot-base
 eval:             ## score an existing generations file
 	$(PY) scripts/evaluate.py --run $(RUN) --gpu $(GPU)
+generalise:       ## the cross-benchmark check: ADAPTER on Spider dev
+	$(PY) scripts/generate.py --backend vllm --model $(BASE_MODEL) \
+		$(if $(ADAPTER),--lora $(ADAPTER),) \
+		--dataset spider --split dev --data-root $(DATA_ROOT) \
+		--max-columns $(MAX_COLUMNS) \
+		--run-name $(RUN_NAME) $(LIMIT_FLAG)
+	$(PY) scripts/evaluate.py --run $(RESULTS)/$(RUN_NAME) --gpu $(GPU)
 errors:           ## categorise failures + chart
 	$(PY) scripts/error_analysis.py --run $(RUN) --sample 100
 latency:          ## p50/p95 + throughput against the running server

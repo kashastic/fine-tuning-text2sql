@@ -27,6 +27,8 @@ These apply to every number below.
 | A7 | Latency figures are **hosted-API round trips from a laptop at 8-way concurrency**. | They are *not* comparable to a self-hosted GPU's latency, and they move with network conditions and concurrency. | `--max-workers`; the real comparison comes from `make latency` against the served model. |
 | A12 | **The prompted baseline is sampled, not greedy**, so a single-run EX figure carries a **+/-1.5 point** noise band and sub-2-point differences mean nothing (M12). | Any ablation smaller than that needs k runs, not one. | Re-run and compare; the API rejects `temperature=0`. |
 | A8 | BIRD dev is **never trained on**. The validation split comes out of train. | Contamination would invalidate every EX number in this repo. | `data.val_size` in `configs/data.yaml`. |
+| A13 | **Spider train means `train_spider.json` (7,000) only.** `train_others.json` (1,659 questions over 6 databases) is left out: it is re-annotated data from Restaurants, GeoQuery, Scholar, Academic, IMDB and Yelp, a different distribution wearing Spider's file format. | Our Spider train count is 7,000, not the 8,659 some papers quote, so "trained on Spider" is not directly comparable to theirs. | `load_spider` in `src/text2sql/data.py` reads `train_spider.json`. |
+| A14 | **Spider test is held out of everything** (D15) -- not trained on, and not evaluated against while iterating. | It is the only number in this project that no decision was tuned against. Spending it early destroys what makes it worth having. | Nothing writes `data/processed/test.jsonl`; `data.splits` is `[train, dev]`. |
 
 ---
 
@@ -310,16 +312,23 @@ it is now verified, not assumed.
 
 ### M14 — The training splits, and what gold filtering removes (measured)
 
-Built from BIRD train at `max_columns: 20`:
+Built from BIRD train + Spider train at `max_columns: 20`:
 
 | split | rows | source |
 | --- | ---: | --- |
-| train | **8,700** | BIRD train, minus the validation holdout and bad gold |
+| train | **15,697** | BIRD train (9,428) + Spider train (7,000), minus the validation holdout and bad gold |
 | val | **300** | held out of **train** (A8), never from dev |
-| dev | **1,534** | evaluation only, nothing dropped |
+| dev | **2,568** | BIRD dev (1,534) + Spider dev (1,034); nothing dropped from either |
+| *(no test file)* | -- | Spider test is deliberately not built (D15) |
 
-**428 train rows (4.5%) were dropped as `bad_gold`.** Classified on a random
-1,200-row sample (46 failures, 3.8%), which is why they fail:
+Arithmetic that should tie out, and does: 9,428 + 7,000 = 16,428, less 431
+unexecutable gold and 300 held out for validation, leaves 15,697. Every row
+carries its `source`, so a mixed `dev.jsonl` can still be reported as two
+benchmarks rather than one average that means nothing.
+
+**431 train rows (2.6%) were dropped as `bad_gold`** -- 428 from BIRD (4.5%
+of it) and 3 from Spider (0.04%, M15). The BIRD 428 were classified on a
+random 1,200-row sample (46 failures, 3.8%), which is why they fail:
 
 | cause | share of failures | example |
 | --- | ---: | --- |
@@ -337,6 +346,61 @@ One honest caveat: the 15% rejected for being non-SELECT or stacked (~64
 rows) are excluded by **our policy**, not by being wrong. The read-only
 single-statement sandbox is a deliberate safety choice; those golds are
 simply outside what this project will execute.
+
+### M15 — Spider on disk, and every split's separation (measured)
+
+Spider turned out to be fetchable after all: Google Drive's `usercontent`
+host serves the official zip to a script when `confirm=t` stands in for the
+virus-scan interstitial, so R1 did not need a manual download.
+
+| split | questions | databases | unexecutable gold |
+| --- | ---: | ---: | ---: |
+| BIRD train | 9,428 | 69 | 428 (4.5%) |
+| BIRD dev | 1,534 | 11 | 0 |
+| Spider train (`train_spider.json`) | 7,000 | 140 | **3 (0.04%)** |
+| Spider dev | 1,034 | 20 | **0** |
+| Spider test | 2,147 | 40 | **0** |
+| Spider `train_others.json` (unused, A13) | 1,659 | 6 | not checked |
+
+Spider dev at 1,034 matches the published count exactly. Every referenced
+SQLite file is present: 0 missing databases across all five splits.
+
+The Spider gold columns are **full-split counts, not samples** -- every one
+of the 10,181 golds was executed at a 30-second deadline. A first pass
+sampling 1,200 train rows found zero failures and would have let "Spider's
+gold is clean" be stated as 0%; the full pass found 3. The rate is 0.04%
+either way, but the honest figure is 3, not 0, and a 1,200-row sample of a
+0.04% population was never going to see it. All three are annotation errors
+of exactly BIRD's kind, and none is ours:
+
+| database | failure |
+| --- | --- |
+| `assets_maintenance` | `no such table: Ref_Company_Types` |
+| `document_management` (x2) | `ORDER BY clause should come after INTERSECT not before` -- SQL SQLite refuses to parse |
+
+**Database overlap, every pair that matters -- all zero:**
+
+| pair | shared databases |
+| --- | ---: |
+| BIRD train vs BIRD dev | 0 |
+| Spider train vs Spider dev | 0 |
+| Spider train vs Spider test | 0 |
+| Spider dev vs Spider test | 0 |
+| BIRD train vs Spider dev | 0 |
+| BIRD dev vs Spider dev | 0 |
+| BIRD train vs Spider train | 0 |
+
+BIRD and Spider share **no databases at all**, so the two benchmarks are
+genuinely different schemas, not the same domains relabelled.
+
+**Spider's gold SQL is clean where BIRD's is not: 0.04% unexecutable against
+BIRD's 4.5% -- a factor of 100.** This settles M14's open question from the
+other side, and it is the measurement that makes the claim rather than the
+argument. Our read-only, 30-second, single-statement sandbox executes 10,178
+of 10,181 Spider golds. Zero failures came from the deadline and zero from
+the single-statement policy. So BIRD's 428 drops are BIRD's annotation
+quality; the sandbox is not a confound. M14 inferred this from error strings,
+which was suggestive. This is a control.
 
 ## 3. Decisions
 
@@ -408,6 +472,29 @@ columns permanently empty.
 untrimmed schemas and *inflated* its score -- the exact unfair-baseline
 failure this repo claims to prevent, and silent.
 
+**D15 — Spider test is spent once, at the end, or not at all.** With Spider
+train in the SFT mix (D16), *every* evaluation set this project reports is a
+held-out-database split of something the model trained on. That is a real
+protection -- M15 shows the databases are disjoint -- but it is not the same
+as a set that never influenced a decision. Spider test (2,147 questions, 40
+databases, disjoint from all four other splits) is therefore excluded from
+training *and* from the iteration loop: no ablation, no checkpoint choice, no
+prompt tweak gets to see it. It is reported once, on the final model, as the
+one number nothing was tuned against. The cost of this discipline is zero;
+the cost of breaking it is that the number stops meaning anything, quietly
+and irreversibly.
+
+**D16 — Spider train goes into SFT, and that changes what Spider dev
+measures.** 7,000 extra examples over 140 further databases is the cheapest
+available defence against learning BIRD's conventions instead of SQL, and
+Spider's schemas, phrasing and absence of an evidence field are genuinely
+different. The honest consequence has to be stated rather than glossed:
+**Spider dev is then a held-out-*database* check, not cross-benchmark
+transfer.** The project can have one or the other from a single SFT run, not
+both. Measuring true transfer would mean a BIRD-only run as well, and a
+second 3-5 GPU-hour SFT is not in a 50-100 EUR budget. D15 is what buys back
+the missing guarantee.
+
 ---
 
 ## 4. Overfitting and generalisation
@@ -420,7 +507,7 @@ and three of them are structural rather than chosen.
 
 | | Protection | Strength |
 | --- | --- | --- |
-| G1 | **Train and dev use disjoint databases.** 9,428 train questions over 69 databases, 1,534 dev over 11, **zero overlap**, and zero identical question strings. A dev answer cannot be memorised from train, because the dev schemas are not in train at all. | Structural, the strongest of these. **Verified -- see M13.** |
+| G1 | **Train and dev use disjoint databases.** 9,428 train questions over 69 databases, 1,534 dev over 11, **zero overlap**, and zero identical question strings. A dev answer cannot be memorised from train, because the dev schemas are not in train at all. | Structural, the strongest of these. **Verified -- see M13**, and M15 extends it to Spider: every pair of the five splits shares 0 databases, BIRD and Spider included. |
 | G2 | `data.val_size: 300` is held out of **train**, never from dev. | Chosen; see A8. |
 | G3 | **QLoRA is itself a regulariser.** Rank 32, dropout 0.05, 7 projection modules: well under 1% of weights are trainable, with far less capacity to memorise than full fine-tuning. Two epochs. | Chosen. |
 | G4 | **GRPO does not imitate labels at all.** The reward is whether the model's *own* query returns the gold result rows, with `beta: 0.02` KL to the reference policy. It learns from outcomes, not from copying strings. | Structural to the method. |
@@ -431,7 +518,7 @@ are open right now:
 
 | | Risk | Status |
 | --- | --- | --- |
-| R1 | **Benchmark-style overfitting.** The model learns BIRD's conventions (how evidence is phrased, its habits with `CAST` and `IIF`) and generalises worse elsewhere. The defence is Spider: a held-out *benchmark*, not a held-out split. | **OPEN -- Spider is not downloaded, so there is currently no generalisation check at all.** |
+| R1 | **Benchmark-style overfitting.** The model learns BIRD's conventions (how evidence is phrased, its habits with `CAST` and `IIF`) and generalises worse elsewhere. The defence is Spider: a held-out *benchmark*, not a held-out split. | **CLOSED for the data; the measurement waits on a GPU.** Spider is on disk and verified (M15): 7,000 train / 1,034 dev / 2,147 test, 0 missing databases, 0 unexecutable golds, and 0 databases shared with BIRD. Spider train enters SFT as schema diversity (D16) and Spider test is held out of everything (D15). What is still unmeasured is the model's Spider EX, because no fine-tuned model exists yet -- that is R1's *number*, not R1's *mechanism*. |
 | R2 | **Train/serve skew on trimmed prompts.** Training on 20-column schemas teaches the model to expect them; serving it a full 80-column schema changes the shape of what it learned to read. | **CLOSED.** `serve/app.py` now takes its prompt shape from `configs/data.yaml` -- the same file the dataset build reads -- with `T2S_*` as an override, reports it on `/health`, and is covered by a test. The old default was `T2S_MAX_COLUMNS=0` (untrimmed) against training's 20, so the skew shipped by default rather than merely being possible. |
 | R3 | **No best-checkpoint selection.** `eval_strategy: epoch` over 2 epochs gave **two** validation points and no `load_best_model_at_end`, so an overfitting epoch 2 was kept by default. | **CLOSED.** Both SFT configs now evaluate and save every 100 steps (~12 points instead of 2), keep the best checkpoint by `eval_loss`, and stop after 3 evals without improvement. `train_sft.py` validates the strategy/step agreement up front with a message naming the key to change, rather than letting transformers raise it after the model is loaded. |
 | R4 | **Pretraining contamination.** Qwen3-4B may have seen BIRD. Unmeasurable from here, true of every published number on any public benchmark. | Accepted; belongs in `MODEL_CARD.md` as a stated limitation. |
@@ -448,20 +535,22 @@ are open right now:
 Total API spend to date: **$4.66**. Every GPU-side row (zero-shot base, SFT
 x2, GRPO, self-consistency) is unrun.
 
-**No training data exists yet.** `make dataset` writes only `dev.jsonl`
-(1,534 evaluation prompts); BIRD train is not downloaded, so the build logs
-`[warn] train: nothing written`. The M11 selection fix is in the schema code,
-so it applies to train whenever that is built -- but nothing training-side
-has been produced.
+**The data pipeline is complete; nothing model-side has been run.** Both
+benchmarks are on disk (~9.1 GB) and `make dataset` writes all three splits:
+15,697 train / 300 val / 2,568 dev, at `max_columns: 20`, so the M11
+selection fix is in the training data and not only in the eval prompts. What
+does not exist is any trained model -- so every Spider EX cell, and the
+zero-shot base row the "+10 EX" criterion is measured against, is still
+empty for want of a GPU rather than for want of data.
 
 ## 6. Known-open items
 
 Ordered by what would change a conclusion, not by effort.
 
-1. **No generalisation check exists** (R1). Spider needs a manual Google
-   Drive download, so every Spider column is empty and nothing currently
-   tests whether the model learned text-to-SQL or learned BIRD. This is the
-   largest remaining hole in the evaluation.
+1. **The generalisation *number* is unmeasured** (R1). Spider itself is now
+   on disk and verified (M15), and its train split is in the SFT mix, but no
+   fine-tuned model exists yet, so every Spider EX column is still empty.
+   What changed is that this is now blocked only on a GPU, not on a download.
 2. **The zero-shot Qwen3-4B row is unmeasured.** It needs a GPU, and it is
    the number the "+10 EX" success criterion is measured *against* -- the
    project cannot state its headline result without it.

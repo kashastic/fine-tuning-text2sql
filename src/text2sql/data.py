@@ -13,6 +13,8 @@ Expected layout under `--data-root` (what `scripts/download_data.py` produces):
     data/raw/spider/train_spider.json
     data/raw/spider/dev.json
     data/raw/spider/database/<db_id>/<db_id>.sqlite
+    data/raw/spider/test.json
+    data/raw/spider/test_database/<db_id>/<db_id>.sqlite
 """
 
 from __future__ import annotations
@@ -124,7 +126,15 @@ def load_spider(
             else [root / f"{split}.json"]
         )
         qpath = next((c for c in candidates if c.exists()), candidates[0])
-    dbdir = Path(databases_dir) if databases_dir else root / "database"
+    # Spider keeps train and dev databases in `database/` but the test ones in
+    # `test_database/`. Defaulting every split to `database/` would make the
+    # test split load cleanly and then report all 2147 databases missing.
+    if databases_dir:
+        dbdir = Path(databases_dir)
+    elif split == "test" and (root / "test_database").exists():
+        dbdir = root / "test_database"
+    else:
+        dbdir = root / "database"
 
     examples: list[Example] = []
     for i, row in enumerate(_read_json(qpath)):

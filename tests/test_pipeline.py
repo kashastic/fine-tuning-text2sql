@@ -122,3 +122,29 @@ def test_every_script_has_working_help(script: str):
     result = run_script(script, "--help")
     assert result.returncode == 0, result.stderr
     assert "usage:" in result.stdout
+
+
+def test_download_rejects_an_html_page_posing_as_an_archive(tmp_path: Path):
+    """A download host that answers with a web page must fail by saying so.
+
+    Drive-style hosts answer an unconfirmed large-file download with an HTML
+    interstitial, and a login wall or rate limit looks the same. The file that
+    lands is a plausible size, so without a magic-byte check the only symptom
+    is `BadZipFile` -- after the download has apparently succeeded.
+    """
+    fake = tmp_path / "spider.zip"
+    fake.write_text(
+        "<!DOCTYPE html><html><body>Sign in to continue</body></html>",
+        encoding="utf-8",
+    )
+    result = run_script(
+        "download_data.py",
+        "--dataset", "spider",
+        "--data-root", str(tmp_path / "raw"),
+        "--archive", str(fake),
+    )
+    assert result.returncode != 0
+    out = result.stdout + result.stderr
+    assert "not a zip" in out, out
+    assert "Sign in to continue" in out, "the guard should quote what arrived"
+    assert "BadZipFile" not in out, "it should not get as far as unzipping"
