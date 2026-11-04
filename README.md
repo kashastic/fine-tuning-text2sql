@@ -26,10 +26,19 @@ from `results/*/summary.json`.
 | Qwen3-4B | SFT + reasoning traces | | | | | |
 | Qwen3-4B | SFT + GRPO | | | | | |
 | Qwen3-4B | SFT + GRPO + self-consistency (8) | | | | | |
-| Large API model | Prompted | | | | | |
+| gpt-5.4-nano | Prompted (API baseline) | 55.80 | 63.03 / 45.26 / 43.45 | | 2938 | 0.464 |
 
 Execution accuracy (EX) uses the official BIRD metric: run both queries, compare
 the result sets as sets.
+
+The API baseline row is a real measured run over all 1,534 BIRD dev questions
+(`results/api-baseline/`): 96.94% of its queries executed, every output parsed,
+and it cost $0.77 in total. Two of BIRD's own gold queries time out at the 30s
+deadline under a loaded machine and so count against every model alike, which
+caps attainable EX at 99.87%; `summary.json` records that as
+`gold_unexecutable`. Its p95 latency is a hosted-API round trip from this
+laptop, not a like-for-like number against a self-hosted GPU — the latency
+comparison that matters comes from `make latency` against the served model.
 
 ## Quickstart
 
@@ -236,7 +245,7 @@ in the table can always be traced back to the exact command and prompts.
 | Zero-shot + SFT evaluation sweeps | ~1 GPU hour each | €0.50–1.50 |
 | SFT run | 3–6 GPU hours | €2–9 |
 | GRPO run | 10–25 GPU hours | €5–35 |
-| API baseline, 1,534 BIRD dev questions | 2.9M prompt tokens (measured) | see below |
+| API baseline, 1,534 BIRD dev questions | 2.63M in / 0.19M out (measured) | $0.77 on gpt-5.4-nano |
 
 Budget 3–4 SFT runs and 2 GRPO runs: €50–100 of rented GPU in total. Run the
 API baseline with `LIMIT=200` first, check the prompts look right, then spend
@@ -247,16 +256,21 @@ the rest.
 The prompted baseline is whichever hosted model you point it at -- `make
 baseline-api API_BACKEND=anthropic API_MODEL=claude-haiku-5-5`, or
 `API_BACKEND=openai-api API_MODEL=gpt-5.4-nano`. Cost over the full 1,534
-dev questions, from the measured 2.9M prompt tokens plus ~200 output tokens
-per answer:
+dev questions, priced at the volumes the gpt-5.4-nano run actually billed
+(2.63M input, 0.19M output — 1,714 in / 126 out per question):
 
 | Model | Backend | Cost | What the comparison then claims |
 | --- | --- | ---: | --- |
-| `claude-opus-5-5` | `anthropic` | $19.72 | gap to a frontier model |
-| `claude-sonnet-5-5` | `anthropic` | $9.86 | gap to a strong mid-tier model |
-| `gpt-5.4-mini` | `openai-api` | $3.93 | gap to a cheap hosted model |
-| `gpt-5.4-nano` | `openai-api` | $1.06 | gap to a cheap hosted model |
-| `claude-haiku-5-5` | `anthropic` | $0.49 | gap to a cheap hosted model |
+| `claude-opus-5-5` | `anthropic` | $14.39 | gap to a frontier model |
+| `claude-sonnet-5-5` | `anthropic` | $7.20 | gap to a strong mid-tier model |
+| `gpt-5.4-mini` | `openai-api` | $2.84 | gap to a cheap hosted model |
+| `gpt-5.4-nano` | `openai-api` | **$0.77 (measured)** | gap to a cheap hosted model |
+| `claude-haiku-5-5` | `anthropic` | $0.36 | gap to a cheap hosted model |
+
+Only the nano row is measured; the others scale its token volumes by list
+price, so they are estimates in one specific way — a chattier or
+reasoning-heavier model emits more output tokens than nano's 126 per answer,
+and output is the expensive side.
 
 Picking a cheap baseline changes the headline. "Three points behind a
 frontier model" is a result; "beats a small hosted model" is a much weaker
@@ -265,11 +279,17 @@ framing for a cheap baseline is cost-per-query at matched accuracy, not a
 gap to the state of the art.
 
 Two cost caveats. On hosted reasoning models the billed output includes
-reasoning tokens, so the real output volume can be several times the ~200
-visible tokens per answer -- `OpenAIAPIBackend` sends
-`reasoning_effort: "minimal"` to hold that down, and the figures above
-assume it. And the token count comes from `data/processed/dev.jsonl` at
-`max_columns: 20`, so it moves with the schema budget.
+reasoning tokens, so the real output volume can be several times the
+visible tokens per answer. `reasoning_effort` is the lever, and the
+accepted values are model-specific -- gpt-5.4-nano takes
+`none|low|medium|high|xhigh` and returns a 400 for the `minimal` that
+older GPT-5 models accepted. The default here is `low`, measured at zero
+reasoning tokens on text-to-SQL prompts, so the baseline costs what its
+visible answers cost while still being free to reason on a hard question;
+`medium` starts spending them. And the token count comes from
+`data/processed/dev.jsonl` at `max_columns: 20`, so it moves with the
+schema budget -- the baseline is run at that same budget, or it is
+answering easier prompts than the fine-tuned model ever sees.
 
 Keys: `ANTHROPIC_API_KEY` from console.anthropic.com or `OPENAI_API_KEY`
 from platform.openai.com. API billing is separate from a Claude or ChatGPT

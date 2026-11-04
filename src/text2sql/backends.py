@@ -137,6 +137,7 @@ class OpenAICompatBackend:
         temperature: float = 0.0,
         timeout: float = 120.0,
         max_workers: int = 16,
+        max_retries: int = 5,
     ) -> None:
         import httpx  # noqa: PLC0415
 
@@ -145,6 +146,7 @@ class OpenAICompatBackend:
         self.max_new_tokens = max_new_tokens
         self.temperature = temperature
         self.max_workers = max_workers
+        self.max_retries = max_retries
         self.client = httpx.Client(
             timeout=timeout,
             headers={"Authorization": f"Bearer {api_key or os.getenv('VLLM_API_KEY', 'EMPTY')}"},
@@ -159,15 +161,45 @@ class OpenAICompatBackend:
             "n": n,
         }
 
+    def _post_with_retry(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """POST once, retrying only what retrying can fix.
+
+        A hosted API rate-limits a 1,534-question sweep long before a local
+        vLLM server would, and an un-retried 429 does not look like an error
+        in the results -- it looks like a wrong answer, because an empty
+        generation scores zero. So back off and try again on 429 and 5xx, and
+        let a 400 through immediately: a rejected parameter is rejected every
+        time, and retrying it just costs five times as long to find out.
+        """
+        last: Exception | None = None
+        for attempt in range(self.max_retries):
+            try:
+                response = self.client.post(f"{self.base_url}/chat/completions", json=payload)
+                response.raise_for_status()
+                return response.json()
+            except Exception as exc:  # noqa: BLE001
+                status = getattr(getattr(exc, "response", None), "status_code", None)
+                retryable = status is None or status == 429 or status >= 500
+                if not retryable or attempt == self.max_retries - 1:
+                    raise
+                last = exc
+                time.sleep(min(2**attempt, 30) * (0.5 + random.random()))
+        raise last or RuntimeError("retries exhausted")  # pragma: no cover
+
     def _one(self, messages: Messages, n: int) -> list[Generation]:
         payload = self._payload(messages, n)
         started = time.perf_counter()
         try:
-            response = self.client.post(f"{self.base_url}/chat/completions", json=payload)
-            response.raise_for_status()
-            body = response.json()
+            body = self._post_with_retry(payload)
         except Exception as exc:  # noqa: BLE001 - a dead server is a result too
-            return [Generation("", error=f"{type(exc).__name__}: {exc}")] * n
+            # Carry the response body: a 400 from a hosted API says exactly
+            # which parameter it rejected, and losing that text turns a
+            # one-line fix into a debugging session.
+            detail = ""
+            body = getattr(getattr(exc, "response", None), "text", "")
+            if body:
+                detail = f" -- {body.strip()[:400]}"
+            return [Generation("", error=f"{type(exc).__name__}: {exc}{detail}")] * n
         latency_ms = (time.perf_counter() - started) * 1000
         usage = body.get("usage") or {}
         return [
@@ -197,7 +229,13 @@ class OpenAIAPIBackend(OpenAICompatBackend):
     decides how many billed reasoning tokens arrive before the answer. That
     last one is the cost lever -- reasoning tokens bill as output, so a
     default-effort run on 1,534 questions can cost several times what the
-    visible answers suggest. "minimal" keeps it near the output estimate.
+    visible answers suggest.
+
+    The accepted efforts vary by model: gpt-5.4-nano takes
+    "none"/"low"/"medium"/"high"/"xhigh" and rejects the "minimal" that older
+    GPT-5 models took. "low" is the default here -- measured at zero reasoning
+    tokens on text-to-SQL prompts, so it costs what the visible answer costs,
+    while leaving the model free to reason on a question that needs it.
     """
 
     name = "openai-api"
@@ -207,7 +245,7 @@ class OpenAIAPIBackend(OpenAICompatBackend):
         model: str = "gpt-5.4-nano",
         base_url: str = "https://api.openai.com/v1",
         api_key: str | None = None,
-        reasoning_effort: str | None = "minimal",
+        reasoning_effort: str | None = "low",
         max_new_tokens: int = 1024,
         **kwargs: Any,
     ) -> None:

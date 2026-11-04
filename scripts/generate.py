@@ -39,10 +39,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--config", type=Path)
     parser.add_argument("--set", dest="overrides", action="append", default=[])
-    parser.add_argument("--backend", choices=["vllm", "openai", "anthropic", "hf"], default="vllm")
+    parser.add_argument("--backend", choices=["vllm", "openai", "openai-api", "anthropic", "hf"],
+                        default="vllm")
     parser.add_argument("--model", required=True)
     parser.add_argument("--lora", help="adapter directory (vllm / hf backends)")
-    parser.add_argument("--base-url", default="http://localhost:8000/v1")
+    parser.add_argument("--base-url", help="default: localhost for `openai`, "
+                                           "api.openai.com for `openai-api`")
     parser.add_argument("--dataset", default="bird")
     parser.add_argument("--split", default="dev")
     parser.add_argument("--data-root", default="data/raw")
@@ -50,13 +52,22 @@ def main() -> int:
     parser.add_argument("--max-tables", type=int, default=8)
     parser.add_argument("--max-columns", type=int, default=0)
     parser.add_argument("--sample-values", type=int, default=3)
-    parser.add_argument("--max-new-tokens", type=int, default=512)
+    # Hosted reasoning models bill reasoning tokens as output and spend them
+    # from this same budget, so they get a roomier default than a local model
+    # that only emits the SQL. Unproduced tokens cost nothing.
+    parser.add_argument("--max-new-tokens", type=int,
+                        help="default: 1024 for `openai-api`, 512 otherwise")
     parser.add_argument("--max-model-len", type=int, default=8192)
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("-n", "--num-samples", type=int, default=1,
                         help="samples per question; >1 enables self-consistency at eval time")
     parser.add_argument("--limit", type=int)
     parser.add_argument("--effort", default="low", help="anthropic backend only")
+    parser.add_argument("--reasoning-effort", default="low",
+                        help="openai-api backend only; the cost lever, since "
+                             "reasoning tokens bill as output. The accepted set "
+                             "is model-specific (gpt-5.4-nano: none/low/medium/"
+                             "high/xhigh) and a wrong one is a 400")
     parser.add_argument("--max-workers", type=int, default=8)
     parser.add_argument("--results-dir", default="results")
     parser.add_argument("--run-name", required=True)
@@ -85,7 +96,8 @@ def main() -> int:
         for e in examples
     ]
 
-    backend_kwargs: dict = {"model": args.model, "max_new_tokens": args.max_new_tokens}
+    max_new_tokens = args.max_new_tokens or (1024 if args.backend == "openai-api" else 512)
+    backend_kwargs: dict = {"model": args.model, "max_new_tokens": max_new_tokens}
     if args.backend == "vllm":
         backend_kwargs |= {
             "max_model_len": args.max_model_len,
@@ -94,10 +106,18 @@ def main() -> int:
         }
     elif args.backend == "openai":
         backend_kwargs |= {
-            "base_url": args.base_url,
+            "base_url": args.base_url or "http://localhost:8000/v1",
             "temperature": args.temperature,
             "max_workers": args.max_workers,
         }
+    elif args.backend == "openai-api":
+        # No temperature: the hosted reasoning models reject a non-default one.
+        backend_kwargs |= {
+            "reasoning_effort": args.reasoning_effort,
+            "max_workers": args.max_workers,
+        }
+        if args.base_url:
+            backend_kwargs["base_url"] = args.base_url
     elif args.backend == "anthropic":
         backend_kwargs |= {"effort": args.effort, "max_workers": args.max_workers}
     else:
@@ -146,8 +166,10 @@ def main() -> int:
         "max_columns": args.max_columns,
         "sample_values": args.sample_values,
         "num_samples": args.num_samples,
-        "temperature": args.temperature,
+        "max_new_tokens": max_new_tokens,
+        "temperature": args.temperature if args.backend != "openai-api" else None,
         "effort": args.effort if args.backend == "anthropic" else None,
+        "reasoning_effort": args.reasoning_effort if args.backend == "openai-api" else None,
         "n_examples": len(examples),
         "wall_seconds": round(wall, 2),
         "questions_per_second": round(len(examples) / wall, 4),

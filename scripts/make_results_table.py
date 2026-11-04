@@ -28,7 +28,7 @@ def method_label(summary: dict[str, Any]) -> str:
     meta = summary.get("meta") or {}
     parts: list[str] = []
     backend = summary.get("backend")
-    if backend == "anthropic":
+    if backend in ("anthropic", "openai-api"):
         parts.append("Prompted")
     elif meta.get("lora") or "sft" in summary.get("run", "").lower():
         parts.append("Fine-tuned")

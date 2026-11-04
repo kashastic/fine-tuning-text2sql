@@ -97,4 +97,49 @@ def test_openai_api_payload_omits_temperature_and_caps_completion_tokens(monkeyp
     assert "max_tokens" not in payload
     assert "temperature" not in payload
     assert payload["max_completion_tokens"] == 1024
-    assert payload["reasoning_effort"] == "minimal"
+    # Not "minimal": gpt-5.4-nano rejects that value with a 400, and the
+    # accepted set is none/low/medium/high/xhigh.
+    assert payload["reasoning_effort"] == "low"
+
+
+def test_openai_backend_retries_429_but_not_400(monkeypatch):
+    """A rate limit is worth retrying; a rejected parameter never is.
+
+    An un-retried 429 does not show up as an error in the results -- it shows
+    up as a wrong answer, because an empty generation scores zero. A retried
+    400 just takes five times as long to tell you the same thing.
+    """
+    import pytest
+
+    try:
+        import httpx
+    except ImportError:
+        pytest.skip("httpx not installed")
+
+    from text2sql.backends import build_backend
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-only-not-a-real-key")
+    monkeypatch.setattr("time.sleep", lambda _s: None)
+    backend = build_backend("openai-api", model="gpt-5.4-nano", max_retries=3)
+
+    calls: list[int] = []
+
+    def fake_post(status: int):
+        def post(_url, json):  # noqa: A002 - httpx's own parameter name
+            calls.append(status)
+            request = httpx.Request("POST", "https://example.invalid")
+            body = b'{"choices":[{"message":{"content":"ok"}}],"usage":{}}'
+            return httpx.Response(status, request=request, content=body)
+        return post
+
+    monkeypatch.setattr(backend.client, "post", fake_post(429))
+    out = backend._one([{"role": "user", "content": "hi"}], n=1)
+    assert len(calls) == 3  # exhausted the retries
+    assert "429" in out[0].error
+
+    calls.clear()
+    monkeypatch.setattr(backend.client, "post", fake_post(400))
+    out = backend._one([{"role": "user", "content": "hi"}], n=1)
+    assert len(calls) == 1  # gave up at once
+    # The response body travels with the error, or a 400 is undebuggable.
+    assert "choices" in out[0].error

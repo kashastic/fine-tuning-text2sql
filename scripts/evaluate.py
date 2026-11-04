@@ -27,6 +27,10 @@ from text2sql.postprocess import extract_sql
 from text2sql.pricing import api_cost_per_1k, self_hosted_cost_per_1k
 from text2sql.sql_exec import ComparisonMode, ExecStatus, compare_results, execute_sql
 
+# Backends billed per token rather than per GPU hour. `openai` is excluded:
+# it points at a locally served model, whose cost is GPU time.
+TOKEN_BILLED = {"anthropic", "openai-api"}
+
 
 def score_row(row: dict[str, Any], timeout: float, mode: ComparisonMode,
               self_consistency: bool) -> Prediction:
@@ -119,8 +123,11 @@ def main() -> int:
     summary["comparison"] = mode.value
 
     # Cost: tokens for an API run, GPU seconds for a self-hosted one.
+    # Every hosted backend is token-billed, not just the Anthropic one --
+    # gating this on a single backend name left the cost column, which is one
+    # of the three the project is actually comparing on, permanently empty.
     tokens = summary.get("tokens") or {}
-    if meta.get("backend") == "anthropic" and tokens.get("input_mean"):
+    if meta.get("backend") in TOKEN_BILLED and tokens.get("input_mean"):
         try:
             summary["cost_per_1k_queries"] = api_cost_per_1k(
                 meta["model"], tokens["input_mean"], tokens.get("output_mean") or 0.0

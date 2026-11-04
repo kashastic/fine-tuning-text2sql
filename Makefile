@@ -3,8 +3,14 @@
 
 PY           ?= python
 BASE_MODEL   ?= Qwen/Qwen3-4B
-API_BACKEND  ?= anthropic        # or openai-api for a hosted OpenAI model
-API_MODEL    ?= claude-opus-5-5  # haiku-5-5 is ~40x cheaper on BIRD dev
+# The prompted baseline. `openai-api` is a hosted OpenAI model, `anthropic` a
+# hosted Claude one; both get the same prompts as the fine-tuned model. See
+# "Choosing the API baseline" in the README for what each one costs on BIRD dev.
+API_BACKEND  ?= openai-api
+API_MODEL    ?= gpt-5.4-nano
+# Must match configs/data.yaml, or the baseline is answering easier prompts
+# than the fine-tuned model ever sees.
+MAX_COLUMNS  ?= 20
 DATASET      ?= bird
 SPLIT        ?= dev
 DATA_ROOT    ?= data/raw
@@ -46,12 +52,14 @@ dataset-reasoning: ## same, with reasoning-then-SQL targets
 baseline-zeroshot: ## week 1: zero-shot base model on BIRD dev
 	$(PY) scripts/generate.py --backend vllm --model $(BASE_MODEL) \
 		--dataset $(DATASET) --split $(SPLIT) --data-root $(DATA_ROOT) \
+		--max-columns $(MAX_COLUMNS) \
 		--run-name zeroshot-base $(LIMIT_FLAG)
 	$(PY) scripts/evaluate.py --run $(RESULTS)/zeroshot-base --gpu $(GPU)
 
 baseline-api:     ## week 1: the prompted API baseline, same prompts
 	$(PY) scripts/generate.py --backend $(API_BACKEND) --model $(API_MODEL) \
 		--dataset $(DATASET) --split $(SPLIT) --data-root $(DATA_ROOT) \
+		--max-columns $(MAX_COLUMNS) \
 		--run-name api-baseline $(LIMIT_FLAG)
 	$(PY) scripts/evaluate.py --run $(RESULTS)/api-baseline
 
