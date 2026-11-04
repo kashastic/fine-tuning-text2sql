@@ -93,99 +93,6 @@ the gold query and put 1,469 of 1,534 questions in a "0 tables" bucket. The
 table-name regex failed. The number was wrong, so it is not reported; EX by
 JOIN count (M7) replaces it.
 
-### M11 — Why those columns were dropped, and the fix (measured, full dev)
-
-Diagnosed causes of the 165 losses in M4:
-
-| cause | n |
-| --- | ---: |
-| no lexical signal at all | 143 |
-| **named verbatim in the question/evidence, lost the budget race** | **54** |
-| token match, lost the budget race | 3 |
-
-(The tiers overlap: a column can be both named and token-matched, so these
-sum past 165.) The 54 were a straight defect -- the question named the column
-and `select_relevant_columns` filled matches in *schema order* until the
-budget ran out, so a weak match near the top of a table displaced an
-explicitly named one further down.
-
-Fix: three tiers. Keys and verbatim-named columns are never dropped and the
-budget stretches to fit them; everything else competes on match strength with
-schema order breaking ties only; and token matching accepts a 4-character
-shared prefix, so "opened" reaches `OpenDate`.
-
-Result, same measurement as M4:
-
-| | before | after |
-| --- | ---: | ---: |
-| **Questions missing a needed column** | 165 (10.8%) | **114 (7.4%)** |
-| Columns kept across all prompts | 64.9% | 65.0% |
-| Median columns shown | 51 | 51 |
-| Max columns shown | 84 | 89 |
-| Longest prompt (Qwen3 tokens, full dev) | 3,671 | 3,823 |
-| Longest prompt + gold | 3,828 | 3,891 |
-| Prompts over 4,096 | 0 | **0** |
-
-So a **31% cut in the recall loss for ~0.1% more columns**, and nothing
-truncates at either trainer limit.
-
-**EX effect: measured, and it is not significant.** Re-ran nano on the new
-prompts (`results/api-baseline-v2/`, $0.77): EX **56.19%** against 55.80%,
-so **+0.39 points** against an estimate of +0.8. Paired over the same 1,534
-questions: 76 answers went wrong -> right, **70 went right -> wrong**, net +6
-questions, exact McNemar **p = 0.679**. That is indistinguishable from noise.
-
-Splitting the churn by whether the prompt actually changed (the old selector
-was recovered from git to diff the column sets) is what explains it:
-
-| | n | wrong->right | right->wrong | net | churn |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| prompt byte-identical | 1,283 | 65 | 64 | +1 | **10.1%** |
-| prompt changed | 251 | 11 | 6 | +5 | 6.8% |
-
-So the fix contributed net +5 questions on the 251 prompts it touched
-(directionally right, still not significant on its own), and the other 129
-flips are the API disagreeing with itself. **Honest statement: coverage
-improved measurably (M4 -> M11), its accuracy effect is positive in direction
-and below this setup's noise floor.** Do not quote +0.39 as a gain.
-
-Note on comparability: M2's "6.3% over 3072" came from a 300-example sample;
-the post-fix full-dev figure is 8.7%. Those are different populations, not a
-regression -- 0% exceed 4,096 either way.
-
-### M12 — The noise floor: this baseline cannot be run twice (measured)
-
-The most consequential measurement here, because it bounds what every other
-comparison in this project can claim.
-
-**gpt-5.4-nano disagrees with itself on 10.1% of BIRD dev given
-byte-identical prompts** (129 of 1,283 answers flipped between two runs,
-net +1). The cause is not subtle: the API refuses greedy decoding.
-
-```
-temperature=0 -> 400  "Unsupported value: 'temperature' does not support 0
-                       with this model. Only the default (1) value is supported."
-top_p=0       -> 400  "Unsupported parameter: 'top_p' is not supported with this model."
-seed=13       -> 200  (accepted; documented as best-effort only)
-```
-
-Eight identical calls to a trivial prompt returned 2 distinct answers. So the
-prompted baseline is **sampled at temperature 1 by force**, not greedy.
-
-Consequence, as a usable rule: with ~129 discordant pairs split near evenly,
-the standard error on a net difference is about `sqrt(129)/1534` ~ **0.74 EX
-points, so a 2-sigma band of roughly +/-1.5 points.** On this backend, **a
-single-run EX difference under about 2 points is not evidence of anything.**
-
-Mitigations, in order of honesty: pass `seed` (now done, best-effort);
-report the band; for a number that has to be defended, average over k runs
-(the standard error falls as `1/sqrt(k)`) or use self-consistency, which
-turns the sampling into a feature.
-
-This does not threaten the project's headline claim -- "+10 EX over the base
-model" is far outside the band -- but it does mean small ablations
-(reasoning-vs-plain SFT, a schema-budget tweak) need more than one run each.
-
 ### M5 — gpt-5.4-nano prompted baseline (measured)
 
 `results/api-baseline/`, full 1,534 dev, 2026-11-04.
@@ -294,6 +201,99 @@ published GPT-4 range", never "matches GPT-4".
 
 ---
 
+### M11 — Why those columns were dropped, and the fix (measured, full dev)
+
+Diagnosed causes of the 165 losses in M4:
+
+| cause | n |
+| --- | ---: |
+| no lexical signal at all | 143 |
+| **named verbatim in the question/evidence, lost the budget race** | **54** |
+| token match, lost the budget race | 3 |
+
+(The tiers overlap: a column can be both named and token-matched, so these
+sum past 165.) The 54 were a straight defect -- the question named the column
+and `select_relevant_columns` filled matches in *schema order* until the
+budget ran out, so a weak match near the top of a table displaced an
+explicitly named one further down.
+
+Fix: three tiers. Keys and verbatim-named columns are never dropped and the
+budget stretches to fit them; everything else competes on match strength with
+schema order breaking ties only; and token matching accepts a 4-character
+shared prefix, so "opened" reaches `OpenDate`.
+
+Result, same measurement as M4:
+
+| | before | after |
+| --- | ---: | ---: |
+| **Questions missing a needed column** | 165 (10.8%) | **114 (7.4%)** |
+| Columns kept across all prompts | 64.9% | 65.0% |
+| Median columns shown | 51 | 51 |
+| Max columns shown | 84 | 89 |
+| Longest prompt (Qwen3 tokens, full dev) | 3,671 | 3,823 |
+| Longest prompt + gold | 3,828 | 3,891 |
+| Prompts over 4,096 | 0 | **0** |
+
+So a **31% cut in the recall loss for ~0.1% more columns**, and nothing
+truncates at either trainer limit.
+
+**EX effect: measured, and it is not significant.** Re-ran nano on the new
+prompts (`results/api-baseline-v2/`, $0.77): EX **56.19%** against 55.80%,
+so **+0.39 points** against an estimate of +0.8. Paired over the same 1,534
+questions: 76 answers went wrong -> right, **70 went right -> wrong**, net +6
+questions, exact McNemar **p = 0.679**. That is indistinguishable from noise.
+
+Splitting the churn by whether the prompt actually changed (the old selector
+was recovered from git to diff the column sets) is what explains it:
+
+| | n | wrong->right | right->wrong | net | churn |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| prompt byte-identical | 1,283 | 65 | 64 | +1 | **10.1%** |
+| prompt changed | 251 | 11 | 6 | +5 | 6.8% |
+
+So the fix contributed net +5 questions on the 251 prompts it touched
+(directionally right, still not significant on its own), and the other 129
+flips are the API disagreeing with itself. **Honest statement: coverage
+improved measurably (M4 -> M11), its accuracy effect is positive in direction
+and below this setup's noise floor.** Do not quote +0.39 as a gain.
+
+Note on comparability: M2's "6.3% over 3072" came from a 300-example sample;
+the post-fix full-dev figure is 8.7%. Those are different populations, not a
+regression -- 0% exceed 4,096 either way.
+
+### M12 — The noise floor: this baseline cannot be run twice (measured)
+
+The most consequential measurement here, because it bounds what every other
+comparison in this project can claim.
+
+**gpt-5.4-nano disagrees with itself on 10.1% of BIRD dev given
+byte-identical prompts** (129 of 1,283 answers flipped between two runs,
+net +1). The cause is not subtle: the API refuses greedy decoding.
+
+```
+temperature=0 -> 400  "Unsupported value: 'temperature' does not support 0
+                       with this model. Only the default (1) value is supported."
+top_p=0       -> 400  "Unsupported parameter: 'top_p' is not supported with this model."
+seed=13       -> 200  (accepted; documented as best-effort only)
+```
+
+Eight identical calls to a trivial prompt returned 2 distinct answers. So the
+prompted baseline is **sampled at temperature 1 by force**, not greedy.
+
+Consequence, as a usable rule: with ~129 discordant pairs split near evenly,
+the standard error on a net difference is about `sqrt(129)/1534` ~ **0.74 EX
+points, so a 2-sigma band of roughly +/-1.5 points.** On this backend, **a
+single-run EX difference under about 2 points is not evidence of anything.**
+
+Mitigations, in order of honesty: pass `seed` (now done, best-effort);
+report the band; for a number that has to be defended, average over k runs
+(the standard error falls as `1/sqrt(k)`) or use self-consistency, which
+turns the sampling into a feature.
+
+This does not threaten the project's headline claim -- "+10 EX over the base
+model" is far outside the band -- but it does mean small ablations
+(reasoning-vs-plain SFT, a schema-budget tweak) need more than one run each.
+
 ## 3. Decisions
 
 **D1 — Always quote identifiers.** Quoting only unusual-looking names made
@@ -366,25 +366,78 @@ failure this repo claims to prevent, and silent.
 
 ---
 
-## 4. Known-open items
+## 4. Overfitting and generalisation
 
-* **114 questions still missing a needed column** (M11, down from 165). The
-  remaining cause is value linking: "schools in Fresno (directly funded)"
-  needs the `Charter` column, and "continuation schools" needs
-  `Educational Option Type`, because the question names a *value* those
-  columns hold, not the column. The standard fix is a cached per-database
-  index of distinct values for low-cardinality text columns, matched against
-  the question's literals. Not built -- it is a real design change, and the
-  per-database index has to be cached or it will dominate dataset build time.
-* **Every future ablation needs k runs, not one** (M12). The single-run noise
-  band is +/-1.5 EX points on this backend, and nothing currently averages
-  over runs. `--seed` is wired through but is best-effort.
-* **Reasoning-token accounting needs `completion_tokens_details` stored** in
-  `generations.jsonl` before M9 can be upgraded from "weak" to measured.
-* **Reasoning-token accounting** is unverified (M9).
-* The **zero-shot Qwen3-4B** row is unmeasured; it needs a GPU, and it is the
-  number the project's "+10 EX" success criterion is measured against.
-* **Spider** is not downloaded (manual Google Drive download), so the Spider
-  column of every results row is empty.
-* `results/RESULTS.md`'s **latency column mixes cost models** -- hosted API
-  round trips against (eventually) a self-hosted server. A7 applies.
+Asked directly: does fine-tuning on this data just teach the model to
+memorise it? Recording the answer because the safeguards are easy to assume
+and three of them are structural rather than chosen.
+
+**What protects against memorisation**
+
+| | Protection | Strength |
+| --- | --- | --- |
+| G1 | **Train and dev use disjoint databases.** BIRD's design: dev has 11 databases, train ~69 different ones. A dev answer cannot be memorised from train, because the dev schemas are not in train. | Structural, the strongest of these. **Unverified** -- confirm once train is downloaded. |
+| G2 | `data.val_size: 300` is held out of **train**, never from dev. | Chosen; see A8. |
+| G3 | **QLoRA is itself a regulariser.** Rank 32, dropout 0.05, 7 projection modules: well under 1% of weights are trainable, with far less capacity to memorise than full fine-tuning. Two epochs. | Chosen. |
+| G4 | **GRPO does not imitate labels at all.** The reward is whether the model's *own* query returns the gold result rows, with `beta: 0.02` KL to the reference policy. It learns from outcomes, not from copying strings. | Structural to the method. |
+| G5 | **EX is execution-based.** A memorised query that does not return the right rows scores zero, so memorisation that does not generalise does not pay. | Structural to the metric. |
+
+**What is actually at risk** -- none of these is classic memorisation, and two
+are open right now:
+
+| | Risk | Status |
+| --- | --- | --- |
+| R1 | **Benchmark-style overfitting.** The model learns BIRD's conventions (how evidence is phrased, its habits with `CAST` and `IIF`) and generalises worse elsewhere. The defence is Spider: a held-out *benchmark*, not a held-out split. | **OPEN -- Spider is not downloaded, so there is currently no generalisation check at all.** |
+| R2 | **Train/serve skew on trimmed prompts.** Training on 20-column schemas teaches the model to expect them; serving it a full 80-column schema changes the shape of what it learned to read. `T2S_MAX_COLUMNS` in `serve/app.py` must equal `data.max_columns` or the deployed model is fed prompts it never saw. | Mechanism exists, **not asserted anywhere** -- nothing fails if they diverge. |
+| R3 | **No best-checkpoint selection.** `eval_strategy: epoch` with `num_train_epochs: 2` yields **two** validation points, and there is no `load_best_model_at_end` or early-stopping callback. If epoch 2 overfits relative to epoch 1, the default is to keep epoch 2, and two points cannot show a loss curve turning. | **OPEN** -- small config change, makes overfitting visible rather than theoretical. |
+| R4 | **Pretraining contamination.** Qwen3-4B may have seen BIRD. Unmeasurable from here, true of every published number on any public benchmark. | Accepted; belongs in `MODEL_CARD.md` as a stated limitation. |
+| R5 | Val-loss signal is noisy at 300 examples, and EX ablations under ~2 points are unresolvable in one run (M12). | Accepted; needs k runs. |
+
+## 5. Runs on disk
+
+| Run | Model | Prompts | EX | Spend | Note |
+| --- | --- | --- | ---: | ---: | --- |
+| `api-baseline` | gpt-5.4-nano | pre-M11 selection | 55.80% | $0.77 | the first measured baseline |
+| `api-baseline-v2` | gpt-5.4-nano | post-M11 selection | 56.19% | $0.77 | +0.39 is **inside** the noise band (M12) |
+| `api-baseline-mini` | gpt-5.4-mini | pre-M11 selection | 60.89% | $3.12 | the stronger prompted baseline |
+
+Total API spend to date: **$4.66**. Every GPU-side row (zero-shot base, SFT
+x2, GRPO, self-consistency) is unrun.
+
+**No training data exists yet.** `make dataset` writes only `dev.jsonl`
+(1,534 evaluation prompts); BIRD train is not downloaded, so the build logs
+`[warn] train: nothing written`. The M11 selection fix is in the schema code,
+so it applies to train whenever that is built -- but nothing training-side
+has been produced.
+
+## 6. Known-open items
+
+Ordered by what would change a conclusion, not by effort.
+
+1. **BIRD train is not downloaded** (8.3 GB), so no training data exists and
+   nothing GPU-side can start. Everything below item 3 waits on this.
+2. **No generalisation check exists** (R1). Spider needs a manual Google
+   Drive download, so every Spider column is empty and nothing currently
+   tests whether the model learned text-to-SQL or learned BIRD.
+3. **The zero-shot Qwen3-4B row is unmeasured.** It needs a GPU, and it is
+   the number the "+10 EX" success criterion is measured *against* -- the
+   project cannot state its headline result without it.
+4. **No best-checkpoint selection in the SFT config** (R3): two validation
+   points and no `load_best_model_at_end`, so an overfitting epoch 2 is kept
+   by default.
+5. **Nothing asserts `T2S_MAX_COLUMNS == data.max_columns`** (R2), so
+   train/serve prompt skew would ship silently.
+6. **Every future ablation needs k runs, not one** (M12): the single-run band
+   is +/-1.5 EX points and nothing averages over runs. `--seed` is wired
+   through but best-effort.
+7. **114 questions still missing a needed column** (M11, down from 165). The
+   remaining cause is value linking -- "directly funded" is a *value* of
+   `Charter`, not a column name, and "continuation schools" a value of
+   `Educational Option Type`. The standard fix is a cached per-database index
+   of distinct values for low-cardinality text columns, matched against the
+   question's literals. Not built: it is a real design change, and the index
+   must be cached per database or it will dominate dataset build time.
+8. **Reasoning-token accounting is unverified** (M9). Needs
+   `completion_tokens_details` stored in `generations.jsonl`.
+9. `results/RESULTS.md`'s **latency column mixes cost models** -- hosted API
+   round trips against (eventually) a self-hosted server. A7 applies.
