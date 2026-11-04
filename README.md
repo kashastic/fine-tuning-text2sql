@@ -236,17 +236,45 @@ in the table can always be traced back to the exact command and prompts.
 | Zero-shot + SFT evaluation sweeps | ~1 GPU hour each | €0.50–1.50 |
 | SFT run | 3–6 GPU hours | €2–9 |
 | GRPO run | 10–25 GPU hours | €5–35 |
-| API baseline, 1,534 BIRD dev questions | 2.9M prompt tokens (measured) | $19.65 opus-5-5 / $9.82 sonnet-5-5 / $0.49 haiku-5-5 |
+| API baseline, 1,534 BIRD dev questions | 2.9M prompt tokens (measured) | see below |
 
 Budget 3–4 SFT runs and 2 GRPO runs: €50–100 of rented GPU in total. Run the
 API baseline with `LIMIT=200` first, check the prompts look right, then spend
 the rest.
 
-The API baseline needs an `ANTHROPIC_API_KEY` from console.anthropic.com;
-API billing is separate from a Claude subscription, and it is the only part
-of this project that needs a key at all. The token count above is measured
-from `data/processed/dev.jsonl` at `max_columns: 20`, so it moves if you
-change the schema budget.
+### Choosing the API baseline
+
+The prompted baseline is whichever hosted model you point it at -- `make
+baseline-api API_BACKEND=anthropic API_MODEL=claude-haiku-5-5`, or
+`API_BACKEND=openai-api API_MODEL=gpt-5.4-nano`. Cost over the full 1,534
+dev questions, from the measured 2.9M prompt tokens plus ~200 output tokens
+per answer:
+
+| Model | Backend | Cost | What the comparison then claims |
+| --- | --- | ---: | --- |
+| `claude-opus-5-5` | `anthropic` | $19.72 | gap to a frontier model |
+| `claude-sonnet-5-5` | `anthropic` | $9.86 | gap to a strong mid-tier model |
+| `gpt-5.4-mini` | `openai-api` | $3.93 | gap to a cheap hosted model |
+| `gpt-5.4-nano` | `openai-api` | $1.06 | gap to a cheap hosted model |
+| `claude-haiku-5-5` | `anthropic` | $0.49 | gap to a cheap hosted model |
+
+Picking a cheap baseline changes the headline. "Three points behind a
+frontier model" is a result; "beats a small hosted model" is a much weaker
+one, because the fine-tuned 4B is itself a small cheap model. The honest
+framing for a cheap baseline is cost-per-query at matched accuracy, not a
+gap to the state of the art.
+
+Two cost caveats. On hosted reasoning models the billed output includes
+reasoning tokens, so the real output volume can be several times the ~200
+visible tokens per answer -- `OpenAIAPIBackend` sends
+`reasoning_effort: "minimal"` to hold that down, and the figures above
+assume it. And the token count comes from `data/processed/dev.jsonl` at
+`max_columns: 20`, so it moves with the schema budget.
+
+Keys: `ANTHROPIC_API_KEY` from console.anthropic.com or `OPENAI_API_KEY`
+from platform.openai.com. API billing is separate from a Claude or ChatGPT
+subscription, and the prompted baseline is the only part of this project
+that needs a key at all.
 
 ## Pitfalls this repo is built to avoid
 

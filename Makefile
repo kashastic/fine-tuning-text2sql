@@ -3,7 +3,8 @@
 
 PY           ?= python
 BASE_MODEL   ?= Qwen/Qwen3-4B
-API_MODEL    ?= claude-opus-5-5
+API_BACKEND  ?= anthropic        # or openai-api for a hosted OpenAI model
+API_MODEL    ?= claude-opus-5-5  # haiku-5-5 is ~40x cheaper on BIRD dev
 DATASET      ?= bird
 SPLIT        ?= dev
 DATA_ROOT    ?= data/raw
@@ -48,8 +49,8 @@ baseline-zeroshot: ## week 1: zero-shot base model on BIRD dev
 		--run-name zeroshot-base $(LIMIT_FLAG)
 	$(PY) scripts/evaluate.py --run $(RESULTS)/zeroshot-base --gpu $(GPU)
 
-baseline-api:     ## week 1: the large prompted model, same prompts
-	$(PY) scripts/generate.py --backend anthropic --model $(API_MODEL) \
+baseline-api:     ## week 1: the prompted API baseline, same prompts
+	$(PY) scripts/generate.py --backend $(API_BACKEND) --model $(API_MODEL) \
 		--dataset $(DATASET) --split $(SPLIT) --data-root $(DATA_ROOT) \
 		--run-name api-baseline $(LIMIT_FLAG)
 	$(PY) scripts/evaluate.py --run $(RESULTS)/api-baseline

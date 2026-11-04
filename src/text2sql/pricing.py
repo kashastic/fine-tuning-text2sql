@@ -25,12 +25,20 @@ class TokenPrice:
     output_per_mtok: float
 
 
-# USD per million tokens.
+# USD per million tokens. Checked 2026-11-04; verify before quoting a cost,
+# since published prices move and a wrong one silently skews the comparison.
 API_PRICES: dict[str, TokenPrice] = {
     "claude-opus-5-5": TokenPrice(4.00, 20.00),
     "claude-opus-5": TokenPrice(5.00, 25.00),
     "claude-sonnet-5-5": TokenPrice(2.00, 10.00),
     "claude-haiku-5-5": TokenPrice(0.10, 0.50),
+    # Hosted OpenAI models. Reasoning tokens bill as output, so the output
+    # price is the one that decides a run's cost -- see OpenAIAPIBackend's
+    # reasoning_effort.
+    "gpt-5.4-mini": TokenPrice(0.75, 4.50),
+    "gpt-5.4-nano": TokenPrice(0.20, 1.25),
+    "gpt-5-mini": TokenPrice(0.25, 2.00),    # deprecated by OpenAI
+    "gpt-5-nano": TokenPrice(0.05, 0.40),    # deprecated by OpenAI
 }
 
 # USD per GPU hour, on-demand, rented. Override per provider.

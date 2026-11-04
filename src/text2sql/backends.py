@@ -150,14 +150,17 @@ class OpenAICompatBackend:
             headers={"Authorization": f"Bearer {api_key or os.getenv('VLLM_API_KEY', 'EMPTY')}"},
         )
 
-    def _one(self, messages: Messages, n: int) -> list[Generation]:
-        payload = {
+    def _payload(self, messages: Messages, n: int) -> dict[str, Any]:
+        return {
             "model": self.model,
             "messages": messages,
             "max_tokens": self.max_new_tokens,
             "temperature": self.temperature if n == 1 else max(self.temperature, 0.7),
             "n": n,
         }
+
+    def _one(self, messages: Messages, n: int) -> list[Generation]:
+        payload = self._payload(messages, n)
         started = time.perf_counter()
         try:
             response = self.client.post(f"{self.base_url}/chat/completions", json=payload)
@@ -182,6 +185,59 @@ class OpenAICompatBackend:
 
         with ThreadPoolExecutor(max_workers=self.max_workers) as pool:
             return list(pool.map(lambda m: self._one(m, n), prompts))
+
+
+class OpenAIAPIBackend(OpenAICompatBackend):
+    """A hosted OpenAI model as the prompted baseline.
+
+    The wire format is the same chat/completions shape vLLM serves, but the
+    hosted reasoning models differ in three ways that each return a 400:
+    `max_tokens` is rejected in favour of `max_completion_tokens`, a
+    non-default `temperature` is rejected outright, and `reasoning_effort`
+    decides how many billed reasoning tokens arrive before the answer. That
+    last one is the cost lever -- reasoning tokens bill as output, so a
+    default-effort run on 1,534 questions can cost several times what the
+    visible answers suggest. "minimal" keeps it near the output estimate.
+    """
+
+    name = "openai-api"
+
+    def __init__(
+        self,
+        model: str = "gpt-5.4-nano",
+        base_url: str = "https://api.openai.com/v1",
+        api_key: str | None = None,
+        reasoning_effort: str | None = "minimal",
+        max_new_tokens: int = 1024,
+        **kwargs: Any,
+    ) -> None:
+        key = api_key or os.getenv("OPENAI_API_KEY")
+        if not key:
+            raise RuntimeError(
+                "no OpenAI credentials found. Set OPENAI_API_KEY (create a key at "
+                "platform.openai.com). Only the prompted baseline needs one."
+            )
+        # The cap has to cover reasoning tokens as well as the SQL, and only
+        # tokens actually produced are billed, so a roomy cap costs nothing
+        # while a tight one truncates answers into wrong ones.
+        super().__init__(
+            model=model, base_url=base_url, api_key=key,
+            max_new_tokens=max_new_tokens, **kwargs,
+        )
+        self.reasoning_effort = reasoning_effort
+
+    def _payload(self, messages: Messages, n: int) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "model": self.model,
+            "messages": messages,
+            # Hosted reasoning models reject `max_tokens`, and this budget has
+            # to cover reasoning tokens as well as the SQL.
+            "max_completion_tokens": self.max_new_tokens,
+            "n": n,
+        }
+        if self.reasoning_effort:
+            payload["reasoning_effort"] = self.reasoning_effort
+        return payload
 
 
 # ---------------------------------------------------------------------- Anthropic
@@ -387,6 +443,7 @@ def build_backend(kind: str, **kwargs: Any) -> Backend:
     kinds = {
         "vllm": VLLMBackend,
         "openai": OpenAICompatBackend,
+        "openai-api": OpenAIAPIBackend,
         "anthropic": AnthropicBackend,
         "hf": HFBackend,
     }

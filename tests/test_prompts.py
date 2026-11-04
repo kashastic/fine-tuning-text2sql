@@ -67,3 +67,34 @@ def test_anthropic_backend_says_what_is_missing_without_credentials(monkeypatch)
         assert "ANTHROPIC_API_KEY" in str(exc)
     except ImportError:
         pytest.skip("anthropic SDK not installed")
+
+
+def test_openai_api_backend_rejects_a_missing_key_clearly(monkeypatch):
+    import pytest
+
+    from text2sql.backends import build_backend
+
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    with pytest.raises(RuntimeError, match="OPENAI_API_KEY"):
+        build_backend("openai-api", model="gpt-5.4-nano")
+
+
+def test_openai_api_payload_omits_temperature_and_caps_completion_tokens(monkeypatch):
+    """Hosted reasoning models 400 on `max_tokens` and on a set temperature."""
+    import pytest
+
+    try:
+        import httpx  # noqa: F401
+    except ImportError:
+        pytest.skip("httpx not installed")
+
+    from text2sql.backends import build_backend
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-only-not-a-real-key")
+    backend = build_backend("openai-api", model="gpt-5.4-nano")
+    payload = backend._payload([{"role": "user", "content": "hi"}], n=1)
+
+    assert "max_tokens" not in payload
+    assert "temperature" not in payload
+    assert payload["max_completion_tokens"] == 1024
+    assert payload["reasoning_effort"] == "minimal"
