@@ -26,14 +26,23 @@ from `results/*/summary.json`.
 | Qwen3-4B | SFT + reasoning traces | | | | | |
 | Qwen3-4B | SFT + GRPO | | | | | |
 | Qwen3-4B | SFT + GRPO + self-consistency (8) | | | | | |
+| gpt-5.4-mini | Prompted (API baseline) | 60.89 | 67.35 / 51.29 / 50.34 | | 2713 | 1.884 |
 | gpt-5.4-nano | Prompted (API baseline) | 55.80 | 63.03 / 45.26 / 43.45 | | 2938 | 0.464 |
 
 Execution accuracy (EX) uses the official BIRD metric: run both queries, compare
 the result sets as sets.
 
-The API baseline row is a real measured run over all 1,534 BIRD dev questions
-(`results/api-baseline/`): 96.94% of its queries executed, every output parsed,
-and it cost $0.77 in total. Two of BIRD's own gold queries time out at the 30s
+Both API rows are real measured runs over all 1,534 BIRD dev questions
+(`results/api-baseline/`, `results/api-baseline-mini/`), on identical prompts.
+nano: 96.94% executed, every output parsed, $0.77 total. mini: 98.63%
+executed, $3.12 total, +5.09 EX for 4x the money — and it gains most on the
+hard end (+6.89 challenging, +6.03 moderate, +4.32 simple), which is where
+schema linking and multi-join reasoning live.
+
+The two models agree more than the gap suggests: 51.4% of questions both get
+right, 34.7% neither does, and an oracle picking the better of the two would
+score 65.25%. That 34.7% shared-failure core is the real target — it is not
+fixed by spending more on a bigger prompted model. Two of BIRD's own gold queries time out at the 30s
 deadline under a loaded machine and so count against every model alike, which
 caps attainable EX at 99.87%; `summary.json` records that as
 `gold_unexecutable`. Its p95 latency is a hosted-API round trip from this
@@ -124,6 +133,24 @@ Two things it does that matter more than they look:
   bleeding, which is why 20 is the default. With it, the longest prompt in
   BIRD dev is 3,671 tokens and the longest prompt-plus-gold 3,828, so nothing
   is truncated at either trainer's limit.
+
+  What that costs, measured over all 1,534 dev prompts: 85.8% of tables and
+  **64.9% of columns** survive, and 49.4% of questions have at least one
+  column hidden. Most of that is harmless -- the hidden column was irrelevant
+  -- but on **165 questions (10.8%) a column the gold query needs is
+  missing**, and the API baseline scores 41.2% on those against 57.6% where
+  the prompt was complete. So trimming costs ~1.8 EX points.
+
+  The split matters for where to fix it: of the 303 questions that lost a
+  table, **none** lost a table the gold needs, so table selection is sound
+  and every real loss is a dropped *column*. Raising `max_columns` is the
+  wrong fix -- 30 puts p99 at 4,134, past GRPO's 4,096 limit, and raising it
+  for the baseline alone would mean the baseline and the fine-tuned model no
+  longer see the same prompts. Better column *selection* at the same budget
+  is the fix. This matters more for training than for scoring: those same
+  prompts become the SFT and GRPO data, where a schema missing the needed
+  column teaches the model to invent column names and earns ~0 GRPO reward
+  whatever the model does.
 * **Gold filtering** drops training rows whose own gold SQL does not execute.
   Teaching the model to imitate a query that errors is pure noise.
 
@@ -263,14 +290,16 @@ dev questions, priced at the volumes the gpt-5.4-nano run actually billed
 | --- | --- | ---: | --- |
 | `claude-opus-5-5` | `anthropic` | $14.39 | gap to a frontier model |
 | `claude-sonnet-5-5` | `anthropic` | $7.20 | gap to a strong mid-tier model |
-| `gpt-5.4-mini` | `openai-api` | $2.84 | gap to a cheap hosted model |
+| `gpt-5.4-mini` | `openai-api` | **$3.12 (measured)** | gap to a strong cheap model |
 | `gpt-5.4-nano` | `openai-api` | **$0.77 (measured)** | gap to a cheap hosted model |
 | `claude-haiku-5-5` | `anthropic` | $0.36 | gap to a cheap hosted model |
 
-Only the nano row is measured; the others scale its token volumes by list
-price, so they are estimates in one specific way — a chattier or
-reasoning-heavier model emits more output tokens than nano's 126 per answer,
-and output is the expensive side.
+The nano and mini rows are measured; the others scale nano's token volumes by
+list price, so they are estimates in one specific way — a chattier or
+reasoning-heavier model emits more output tokens, and output is the expensive
+side. mini is the worked example: estimated at $2.84 from nano's 126 output
+tokens per answer, it actually billed 166, so it came in at $3.12. Treat the
+unmeasured rows as lower bounds.
 
 Picking a cheap baseline changes the headline. "Three points behind a
 frontier model" is a result; "beats a small hosted model" is a much weaker
