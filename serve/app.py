@@ -30,6 +30,7 @@ from pydantic import BaseModel, Field
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from text2sql.backends import OpenAICompatBackend  # noqa: E402
+from text2sql.config import load_config  # noqa: E402
 from text2sql.postprocess import extract_sql  # noqa: E402
 from text2sql.prompts import build_prompt  # noqa: E402
 from text2sql.data import Example  # noqa: E402
@@ -39,10 +40,34 @@ from text2sql.sql_exec import ExecStatus, execute_sql  # noqa: E402
 MODEL = os.getenv("T2S_MODEL", "qwen3-4b-text2sql")
 VLLM_URL = os.getenv("T2S_VLLM_URL", "http://localhost:8000/v1")
 DB_ROOT = Path(os.getenv("T2S_DB_ROOT", "data/raw/bird/dev/dev_databases"))
-STYLE = os.getenv("T2S_STYLE", "sql")
-MAX_TABLES = int(os.getenv("T2S_MAX_TABLES", "8"))
-MAX_COLUMNS = int(os.getenv("T2S_MAX_COLUMNS", "0"))
-SAMPLE_VALUES = int(os.getenv("T2S_SAMPLE_VALUES", "3"))
+# The prompt's shape is part of what the model learned, so these defaults come
+# from the same config the dataset build reads rather than from hardcoded
+# values that drift away from it. Serving a model trained on 20-column schemas
+# a full 80-column one changes the shape of what it was taught to read, and
+# nothing errors -- it just gets quietly worse. The old default here was
+# `max_columns = 0`, meaning untrimmed, which guaranteed that skew out of the
+# box. T2S_* still wins, for serving a model trained on a different recipe.
+DATA_CONFIG = Path(os.getenv("T2S_DATA_CONFIG", "configs/data.yaml"))
+try:
+    _DATA_CFG = load_config(DATA_CONFIG) if DATA_CONFIG.exists() else None
+except Exception as exc:  # noqa: BLE001 - serving must not die on a bad config
+    print(f"[warn] could not read {DATA_CONFIG} ({exc}); using built-in defaults")
+    _DATA_CFG = None
+
+
+def _prompt_setting(env: str, path: str, default: Any) -> Any:
+    raw = os.getenv(env)
+    if raw is not None:
+        return type(default)(raw)
+    if _DATA_CFG is not None:
+        return type(default)(_DATA_CFG.get_path(path, default))
+    return default
+
+
+STYLE = _prompt_setting("T2S_STYLE", "data.style", "sql")
+MAX_TABLES = _prompt_setting("T2S_MAX_TABLES", "data.max_tables", 8)
+MAX_COLUMNS = _prompt_setting("T2S_MAX_COLUMNS", "data.max_columns", 20)
+SAMPLE_VALUES = _prompt_setting("T2S_SAMPLE_VALUES", "data.sample_values", 3)
 MAX_NEW_TOKENS = int(os.getenv("T2S_MAX_NEW_TOKENS", "512"))
 EXEC_TIMEOUT = float(os.getenv("T2S_EXEC_TIMEOUT", "15"))
 MAX_ROWS = int(os.getenv("T2S_MAX_ROWS", "100"))
@@ -110,6 +135,16 @@ def health() -> dict[str, Any]:
         "model": MODEL,
         "vllm_url": VLLM_URL,
         "db_root": str(DB_ROOT),
+        # The prompt shape is reported so a deployed instance can be checked
+        # against the recipe its weights were trained with, instead of the
+        # mismatch being invisible until accuracy is mysteriously low.
+        "prompt": {
+            "source": str(DATA_CONFIG) if _DATA_CFG is not None else "built-in defaults",
+            "style": STYLE,
+            "max_tables": MAX_TABLES,
+            "max_columns": MAX_COLUMNS,
+            "sample_values": SAMPLE_VALUES,
+        },
         "databases": sorted(p.name for p in DB_ROOT.glob("*") if p.is_dir())[:200]
         if DB_ROOT.exists() else [],
     }

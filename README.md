@@ -183,6 +183,18 @@ Two things it does that matter more than they look:
   model to invent column names and earns ~0 GRPO reward whatever it does.
   The remaining 114 need **value** linking ("directly funded" is a value of
   `Charter`, not a column name); see `docs/MEASUREMENTS.md`.
+* **One source of truth for prompt shape.** `serve/app.py` reads
+  `max_tables`, `max_columns`, `sample_values` and `style` from
+  `configs/data.yaml` -- the same file the dataset build reads -- and reports
+  them on `/health`, so a deployed model can be checked against the recipe its
+  weights were trained with. `T2S_*` env vars override, for serving a model
+  trained on a different recipe. Training on 20-column schemas and serving
+  80-column ones does not error; it just quietly gets worse.
+* **Best checkpoint, not last.** The SFT configs evaluate and save every 100
+  steps (~12 validation points over two epochs, not 2), keep the best by
+  `eval_loss`, and stop after 3 evals without improvement. Keeping the last
+  checkpoint means shipping an overfitted second epoch by default, and two
+  eval points cannot show a loss curve turning.
 * **Gold filtering** drops training rows whose own gold SQL does not execute.
   Teaching the model to imitate a query that errors is pure noise.
 
@@ -282,7 +294,7 @@ src/text2sql/
 scripts/            download, build, generate, evaluate, train x2, merge,
                     error analysis, latency bench, results table
 serve/              FastAPI service + Gradio demo
-tests/              91 tests on a fixture benchmark; no GPU, no downloads
+tests/              92 tests on a fixture benchmark; no GPU, no downloads
 ```
 
 ## Reproduction

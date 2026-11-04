@@ -34,9 +34,19 @@ train:
   lr_scheduler_type: cosine
   warmup_ratio: 0.03
   logging_steps: 10
-  save_strategy: epoch
+  # Step-based, not epoch-based: two epochs give two validation points, which
+  # cannot show a loss curve turning, and the last checkpoint is then the one
+  # you serve even if it overfit. ~9.4k train rows at effective batch 16 is
+  # ~590 steps/epoch, so every 100 steps gives ~12 eval points.
+  eval_strategy: steps
+  eval_steps: 100
+  save_strategy: steps          # must match eval_strategy for best-checkpoint
+  save_steps: 100               # must be a multiple of eval_steps
   save_total_limit: 3
-  eval_strategy: epoch
+  load_best_model_at_end: true
+  metric_for_best_model: eval_loss
+  greater_is_better: false
+  early_stopping_patience: 3    # eval events, not epochs
   bf16: true
   gradient_checkpointing: true
   optim: paged_adamw_8bit

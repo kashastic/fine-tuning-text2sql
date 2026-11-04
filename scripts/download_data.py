@@ -70,12 +70,17 @@ def download(url: str, target: Path) -> Path:
     with urllib.request.urlopen(url, context=context) as response:  # noqa: S310
         total = int(response.headers.get("Content-Length") or 0)
         done = 0
+        # Only redraw when the whole percent changes. `\r` is invisible in a
+        # terminal but not in a redirected log, where a 9 GB download at 0.1%
+        # granularity writes one 90-field line that is unreadable and large.
+        last_pct = -1
         with partial.open("wb") as fh:
             while chunk := response.read(1 << 20):
                 fh.write(chunk)
                 done += len(chunk)
-                if total:
-                    print(f"\r       {done / total:6.1%} of {total / 1e9:.1f} GB", end="", flush=True)
+                if total and (pct := int(done * 100 / total)) != last_pct:
+                    last_pct = pct
+                    print(f"\r       {pct:3d}% of {total / 1e9:.1f} GB", end="", flush=True)
         if total:
             print()
     partial.rename(target)

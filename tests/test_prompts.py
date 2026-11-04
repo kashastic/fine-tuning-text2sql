@@ -169,3 +169,45 @@ def test_openai_api_payload_carries_a_seed_when_given(monkeypatch):
     plain = build_backend("openai-api", model="gpt-5.4-nano")
     assert "seed" not in plain._payload([{"role": "user", "content": "hi"}], n=1)
     assert "temperature" not in seeded._payload([{"role": "user", "content": "hi"}], n=1)
+
+
+def test_serving_defaults_match_the_dataset_config(tmp_path, monkeypatch):
+    """The served prompt shape must come from the training recipe.
+
+    The old default was `T2S_MAX_COLUMNS=0` -- untrimmed -- while training
+    used 20, so a freshly deployed model was fed schemas structurally unlike
+    anything it had seen, and nothing errored. This asserts the default now
+    tracks configs/data.yaml instead of a hardcoded value.
+    """
+    import pytest
+
+    try:
+        import fastapi  # noqa: F401
+        import yaml  # noqa: F401
+    except ImportError:
+        pytest.skip("fastapi/pyyaml not installed")
+
+    cfg = tmp_path / "data.yaml"
+    cfg.write_text(
+        "data:\n  style: reasoning\n  max_tables: 5\n"
+        "  max_columns: 17\n  sample_values: 2\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("T2S_DATA_CONFIG", str(cfg))
+    for name in ("T2S_STYLE", "T2S_MAX_TABLES", "T2S_MAX_COLUMNS", "T2S_SAMPLE_VALUES"):
+        monkeypatch.delenv(name, raising=False)
+
+    import importlib
+
+    import serve.app as app_module
+
+    app_module = importlib.reload(app_module)
+    assert app_module.MAX_COLUMNS == 17, "serving ignored the dataset config"
+    assert app_module.MAX_TABLES == 5
+    assert app_module.SAMPLE_VALUES == 2
+    assert app_module.STYLE == "reasoning"
+    assert app_module.health()["prompt"]["max_columns"] == 17
+
+    # An explicit env var still wins, for serving a differently-trained model.
+    monkeypatch.setenv("T2S_MAX_COLUMNS", "30")
+    assert importlib.reload(app_module).MAX_COLUMNS == 30

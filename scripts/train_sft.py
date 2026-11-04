@@ -84,6 +84,31 @@ def main() -> int:
         ),
     )
 
+    # Best-checkpoint selection needs somewhere to measure "best", and
+    # transformers requires the save and eval cadences to agree before it will
+    # restore one. Check both here, where the message can say what to change,
+    # rather than letting the trainer raise it after the model is loaded.
+    keep_best = bool(cfg.get_path("train.load_best_model_at_end", True)) and "validation" in dataset
+    if keep_best:
+        save_strategy = cfg.get_path("train.save_strategy", "epoch")
+        eval_strategy = cfg.get_path("train.eval_strategy", "epoch")
+        if save_strategy != eval_strategy:
+            print(f"[fail] load_best_model_at_end needs train.save_strategy "
+                  f"({save_strategy!r}) to equal train.eval_strategy "
+                  f"({eval_strategy!r}); set them the same or disable it")
+            return 1
+        if save_strategy == "steps":
+            save_steps = cfg.get_path("train.save_steps", None)
+            eval_steps = cfg.get_path("train.eval_steps", None)
+            if not save_steps or not eval_steps or save_steps % eval_steps:
+                print(f"[fail] with strategy 'steps', train.save_steps "
+                      f"({save_steps}) must be a non-zero multiple of "
+                      f"train.eval_steps ({eval_steps})")
+                return 1
+    elif cfg.get_path("train.load_best_model_at_end", True):
+        print("[warn] no validation split, so the last checkpoint is the one "
+              "you get; overfitting will be invisible")
+
     sft_kwargs = {
         "output_dir": str(out_dir),
         "run_name": run_name,
@@ -99,6 +124,14 @@ def main() -> int:
         "save_strategy": cfg.get_path("train.save_strategy", "epoch"),
         "save_total_limit": cfg.get_path("train.save_total_limit", 3),
         "eval_strategy": cfg.get_path("train.eval_strategy", "epoch" if "validation" in dataset else "no"),
+        "eval_steps": cfg.get_path("train.eval_steps", None),
+        "save_steps": cfg.get_path("train.save_steps", None),
+        # Keep the best checkpoint, not the last one. Without this, a second
+        # epoch that overfits is what gets saved and served, and two
+        # epoch-level eval points cannot show a loss curve turning.
+        "load_best_model_at_end": keep_best,
+        "metric_for_best_model": cfg.get_path("train.metric_for_best_model", "eval_loss"),
+        "greater_is_better": cfg.get_path("train.greater_is_better", False),
         "bf16": cfg.get_path("train.bf16", True),
         "gradient_checkpointing": cfg.get_path("train.gradient_checkpointing", True),
         "optim": cfg.get_path("train.optim", "paged_adamw_8bit"),
@@ -122,6 +155,16 @@ def main() -> int:
         processing_class=tokenizer,
         peft_config=peft_config,
     )
+    patience = int(cfg.get_path("train.early_stopping_patience", 0) or 0)
+    if patience and "validation" in dataset:
+        from transformers import EarlyStoppingCallback
+
+        # Stop paying for GPU hours that are making the model worse. Patience
+        # is in eval events, not epochs, so it only means anything alongside
+        # step-based evaluation.
+        trainer.add_callback(EarlyStoppingCallback(early_stopping_patience=patience))
+        print(f"[train] early stopping after {patience} evals without improvement")
+
     describe_trainable(trainer.model)
 
     dump_config(dict(cfg), out_dir / "run.yaml")

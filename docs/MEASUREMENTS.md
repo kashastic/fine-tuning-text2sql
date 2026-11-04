@@ -388,8 +388,8 @@ are open right now:
 | | Risk | Status |
 | --- | --- | --- |
 | R1 | **Benchmark-style overfitting.** The model learns BIRD's conventions (how evidence is phrased, its habits with `CAST` and `IIF`) and generalises worse elsewhere. The defence is Spider: a held-out *benchmark*, not a held-out split. | **OPEN -- Spider is not downloaded, so there is currently no generalisation check at all.** |
-| R2 | **Train/serve skew on trimmed prompts.** Training on 20-column schemas teaches the model to expect them; serving it a full 80-column schema changes the shape of what it learned to read. `T2S_MAX_COLUMNS` in `serve/app.py` must equal `data.max_columns` or the deployed model is fed prompts it never saw. | Mechanism exists, **not asserted anywhere** -- nothing fails if they diverge. |
-| R3 | **No best-checkpoint selection.** `eval_strategy: epoch` with `num_train_epochs: 2` yields **two** validation points, and there is no `load_best_model_at_end` or early-stopping callback. If epoch 2 overfits relative to epoch 1, the default is to keep epoch 2, and two points cannot show a loss curve turning. | **OPEN** -- small config change, makes overfitting visible rather than theoretical. |
+| R2 | **Train/serve skew on trimmed prompts.** Training on 20-column schemas teaches the model to expect them; serving it a full 80-column schema changes the shape of what it learned to read. | **CLOSED.** `serve/app.py` now takes its prompt shape from `configs/data.yaml` -- the same file the dataset build reads -- with `T2S_*` as an override, reports it on `/health`, and is covered by a test. The old default was `T2S_MAX_COLUMNS=0` (untrimmed) against training's 20, so the skew shipped by default rather than merely being possible. |
+| R3 | **No best-checkpoint selection.** `eval_strategy: epoch` over 2 epochs gave **two** validation points and no `load_best_model_at_end`, so an overfitting epoch 2 was kept by default. | **CLOSED.** Both SFT configs now evaluate and save every 100 steps (~12 points instead of 2), keep the best checkpoint by `eval_loss`, and stop after 3 evals without improvement. `train_sft.py` validates the strategy/step agreement up front with a message naming the key to change, rather than letting transformers raise it after the model is loaded. |
 | R4 | **Pretraining contamination.** Qwen3-4B may have seen BIRD. Unmeasurable from here, true of every published number on any public benchmark. | Accepted; belongs in `MODEL_CARD.md` as a stated limitation. |
 | R5 | Val-loss signal is noisy at 300 examples, and EX ablations under ~2 points are unresolvable in one run (M12). | Accepted; needs k runs. |
 
@@ -414,30 +414,27 @@ has been produced.
 
 Ordered by what would change a conclusion, not by effort.
 
-1. **BIRD train is not downloaded** (8.3 GB), so no training data exists and
-   nothing GPU-side can start. Everything below item 3 waits on this.
-2. **No generalisation check exists** (R1). Spider needs a manual Google
+1. **No generalisation check exists** (R1). Spider needs a manual Google
    Drive download, so every Spider column is empty and nothing currently
-   tests whether the model learned text-to-SQL or learned BIRD.
-3. **The zero-shot Qwen3-4B row is unmeasured.** It needs a GPU, and it is
+   tests whether the model learned text-to-SQL or learned BIRD. This is the
+   largest remaining hole in the evaluation.
+2. **The zero-shot Qwen3-4B row is unmeasured.** It needs a GPU, and it is
    the number the "+10 EX" success criterion is measured *against* -- the
    project cannot state its headline result without it.
-4. **No best-checkpoint selection in the SFT config** (R3): two validation
-   points and no `load_best_model_at_end`, so an overfitting epoch 2 is kept
-   by default.
-5. **Nothing asserts `T2S_MAX_COLUMNS == data.max_columns`** (R2), so
-   train/serve prompt skew would ship silently.
-6. **Every future ablation needs k runs, not one** (M12): the single-run band
+3. **Every future ablation needs k runs, not one** (M12): the single-run band
    is +/-1.5 EX points and nothing averages over runs. `--seed` is wired
    through but best-effort.
-7. **114 questions still missing a needed column** (M11, down from 165). The
+4. **114 questions still missing a needed column** (M11, down from 165). The
    remaining cause is value linking -- "directly funded" is a *value* of
    `Charter`, not a column name, and "continuation schools" a value of
    `Educational Option Type`. The standard fix is a cached per-database index
    of distinct values for low-cardinality text columns, matched against the
    question's literals. Not built: it is a real design change, and the index
    must be cached per database or it will dominate dataset build time.
-8. **Reasoning-token accounting is unverified** (M9). Needs
+5. **Reasoning-token accounting is unverified** (M9). Needs
    `completion_tokens_details` stored in `generations.jsonl`.
-9. `results/RESULTS.md`'s **latency column mixes cost models** -- hosted API
+6. `results/RESULTS.md`'s **latency column mixes cost models** -- hosted API
    round trips against (eventually) a self-hosted server. A7 applies.
+7. **G1 is unverified**: that BIRD's train and dev databases are disjoint is
+   its documented design, not something this repo has checked. Confirm once
+   train is built.
