@@ -32,7 +32,7 @@ LIMIT_FLAG := $(if $(LIMIT),--limit $(LIMIT),)
 
 .PHONY: help install install-train install-serve data verify dataset dataset-reasoning \
         baseline-zeroshot baseline-api sft sft-reasoning grpo merge serve api demo \
-        eval generalise recall errors latency results test lint clean
+        eval generalise recall compare errors latency results test lint clean
 
 help:
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
@@ -62,12 +62,20 @@ baseline-zeroshot: ## week 1: zero-shot base model on BIRD dev
 		--run-name zeroshot-base $(LIMIT_FLAG)
 	$(PY) scripts/evaluate.py --run $(RESULTS)/zeroshot-base --gpu $(GPU)
 
+# Changing the prompt recipe invalidates every baseline measured on the old
+# one (assumption A5: every compared model sees identical prompts), so this
+# has been re-run twice already and will be again. Name each re-run rather
+# than overwriting the last, and `make compare` the pair:
+#   make baseline-api API_RUN=api-baseline-v4
+#   make compare BEFORE=results/api-baseline-v3 AFTER=results/api-baseline-v4
+# Needs OPENAI_API_KEY in the environment; keep the key outside this repo.
+API_RUN      ?= api-baseline
 baseline-api:     ## week 1: the prompted API baseline, same prompts
 	$(PY) scripts/generate.py --backend $(API_BACKEND) --model $(API_MODEL) \
 		--dataset $(DATASET) --split $(SPLIT) --data-root $(DATA_ROOT) \
 		--max-columns $(MAX_COLUMNS) \
-		--run-name api-baseline $(LIMIT_FLAG)
-	$(PY) scripts/evaluate.py --run $(RESULTS)/api-baseline
+		--run-name $(API_RUN) $(LIMIT_FLAG)
+	$(PY) scripts/evaluate.py --run $(RESULTS)/$(API_RUN)
 
 CONFIG ?= configs/sft_qwen3_4b.yaml
 sft:              ## week 3: QLoRA SFT
@@ -98,6 +106,10 @@ recall:           ## what schema trimming costs: needed columns/tables lost
 	$(PY) scripts/schema_recall.py --dataset $(DATASET) --split $(SPLIT) \
 		--data-root $(DATA_ROOT) --max-columns $(MAX_COLUMNS) \
 		--tokenizer $(BASE_MODEL) $(LIMIT_FLAG)
+BEFORE ?= $(RESULTS)/api-baseline-v2
+AFTER  ?= $(RESULTS)/api-baseline-v3
+compare:          ## paired EX difference between two scored runs + McNemar
+	$(PY) scripts/compare_runs.py $(BEFORE) $(AFTER)
 eval:             ## score an existing generations file
 	$(PY) scripts/evaluate.py --run $(RUN) --gpu $(GPU)
 generalise:       ## the cross-benchmark check: ADAPTER on Spider dev

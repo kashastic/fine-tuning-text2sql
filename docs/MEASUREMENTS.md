@@ -535,6 +535,104 @@ rather than matching: "Under whose administration is the school..." needs
 `AdmFName1`, "the type of education offered" needs `EdOpsName`. That is an
 embedding or an LLM linker, not another lexical tier.
 
+### M18 — What M17 bought in EX: nothing measurable, and why (measured, full dev)
+
+A5 requires every compared model to see identical prompts, and M17 changed
+the prompts, so the prompted baseline was re-run on them
+(`results/api-baseline-v3/`, $0.78, same settings as v2: `max_columns=20`,
+`reasoning_effort=low`, `seed=13`).
+
+**EX 56.26% against v2's 56.19%. Net +1 question in 1,534, exact McNemar
+p = 1.0000.** The estimate recorded before the run was about +1 point. The
+error in it is instructive: the treatment arm below did move +0.99 points,
+so the estimate was about right *for the prompts that changed* -- it simply
+failed to dilute by the two thirds of the split whose prompts did not. Even
+taking the treatment effect at face value, the whole-split prediction should
+have been +0.33 points, which is itself well inside the noise band.
+
+Measured with `scripts/compare_runs.py`, which reproduces M11's published
+comparison exactly (856/862, 76/70, p = 0.6792) -- those figures were derived
+by hand and the code had not survived, so this now lives in the repo.
+
+Prompt hashes were taken on both sides of 3b04ec7 to split the flips. **507
+of 1,534 BIRD dev prompts changed (33.1%); 1,027 are byte-identical.** The
+identical ones are a control arm measured in the same API run: nothing about
+them changed, so whatever they flip by is noise.
+
+| arm | n | EX before | EX after | wrong->right | right->wrong | net | churn | p |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| overall | 1,534 | 56.19% | 56.26% | 81 | 80 | +1 | 10.50% | 1.0000 |
+| prompt byte-identical (control) | 1,027 | 56.48% | 56.09% | 49 | 53 | **-4** | 9.93% | 0.7666 |
+| prompt changed (treatment) | 507 | 55.62% | 56.61% | 32 | 27 | **+5** | 11.64% | 0.6029 |
+
+The control arm's 9.93% churn is **M12's noise floor reproduced a third time,
+independently** -- the number to quote for this backend is ~10%, and it is
+stable. The treatment arm is net +5 on the prompts the fix touched, which is
+the same net +5 M11's treatment arm produced. Neither clears its own noise.
+
+**The sharper test: did EX improve on the questions whose schema was actually
+repaired?** Pairing the recall audit with both runs partitions dev by whether
+the prompt was missing something the gold needs. (125 lost something before,
+42 after; every table loss also loses that table's columns, so the two
+partitions tie out: 84 + 41 = 125 and 41 + 1 = 42.)
+
+| group | n | EX v2 | EX v3 | w->r | r->w | net | p |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| **restored** (lost before, complete now) | 84 | 38.10% | 42.86% | 9 | 5 | **+4** | 0.4240 |
+| still incomplete (both runs) | 41 | 19.51% | 24.39% | 4 | 2 | +2 | 0.6875 |
+| never incomplete (control) | 1,408 | 58.31% | 58.03% | 68 | 72 | -4 | 0.8000 |
+| newly incomplete | 1 | 100.00% | 0.00% | 0 | 1 | -1 | 1.0000 |
+
+So the gain is where the mechanism says it should be -- +4 and +2 on the two
+repaired groups, -4 on the 1,408 untouched ones -- and none of it is
+significant at these group sizes.
+
+**The finding worth keeping is the dose-response, not the delta.** Ranking
+v3's EX by how complete the prompt was:
+
+| prompt | n | EX |
+| --- | ---: | ---: |
+| complete schema | 1,408 | **58.03%** |
+| schema repaired by M17 | 84 | 42.86% |
+| schema still missing something | 41 | **24.39%** |
+
+A question whose prompt is missing a needed column is **less than half as
+likely** to be answered correctly. That is the strongest evidence in this
+project that schema recall is worth the work -- and it is also why the EX
+delta is small: the repaired 84 moved to 42.86%, not to the 58.03% that
+complete prompts enjoy. **Restoring the column captured about a quarter of
+the available headroom** (84 x (58.03 - 38.10) = 16.7 questions on offer, +4
+delivered).
+
+Caveat, and it cuts against reading the table as causal: these three groups
+are not randomised. Questions whose columns went missing are the ones with
+obscurely-named columns, and obscure naming travels with harder queries, so
+part of the 58% -> 43% -> 24% gradient is difficulty rather than prompt
+content. The *within-group* paired numbers (+4, +2, -4) are the clean
+measurement; the gradient is an association.
+
+**Honest statement.** Schema recall improved 3x (M17) and EX did not move
+measurably. Both are true, and the second does not retract the first: a
+complete schema is **necessary but far from sufficient**, the 42 survivors
+are the hardest questions in the split, and a 4B model fine-tuned on these
+prompts has more to gain from a complete schema than a hosted model
+prompted zero-shot does. Do not quote +0.07 as anything.
+
+**One regression, and the mechanism matters.** `formula_1/852` ("races in
+2010 held on grand prixs outside Asia and Europe") had a complete schema
+before and lost `circuits` entirely. Value linking raised other tables'
+scores past it, and the hard `max_tables=8` cap then evicted it -- columns
+shown went 19 -> 51, so the budget filled with better-scoring tables. Table
+losses still fell 24 -> 6 overall, so the trade is overwhelmingly positive,
+but **value linking changes table *ranking*, not just column selection**, and
+that is the failure mode to watch if `max_tables` is ever lowered.
+
+**Prompt length, on the OpenAI tokenizer this time** (M17's figures are
+Qwen3): mean input 1,717 -> 1,752 tokens, **+2.05%**. The p50 moved five
+Qwen3 tokens, but the mean moved 35, because the added columns land on
+exactly the 507 prompts that needed them. Cost per 1k queries EUR 0.462 ->
+0.470.
+
 ## 3. Decisions
 
 **D1 — Always quote identifiers.** Quoting only unusual-looking names made
@@ -689,21 +787,28 @@ are open right now:
 | --- | --- | --- | ---: | ---: | --- |
 | `api-baseline` | gpt-5.4-nano | pre-M11 selection | 55.80% | $0.77 | the first measured baseline |
 | `api-baseline-v2` | gpt-5.4-nano | post-M11 selection | 56.19% | $0.77 | +0.39 is **inside** the noise band (M12) |
-| `api-baseline-mini` | gpt-5.4-mini | pre-M11 selection | 60.89% | $3.12 | the stronger prompted baseline |
+| `api-baseline-v3` | gpt-5.4-nano | **current (post-M17)** | 56.26% | $0.78 | **the comparable nano row** (M18) |
+| `api-baseline-mini` | gpt-5.4-mini | pre-M11 selection | 60.89% | $3.12 | stale prompts; needs a re-run (open item 0) |
 
-Total API spend to date: **$4.66**. Every GPU-side row (zero-shot base, SFT
+Total API spend to date: **$5.44**. Every GPU-side row (zero-shot base, SFT
 x2, GRPO, self-consistency) is unrun.
 
-**All three rows above were measured on pre-M17 prompts, and A5 now bites.**
-A5 is the assumption the whole headline comparison rests on: every model
-compared sees identical prompts. M17 changed the prompts, so these baselines
-are no longer comparable with anything built from the current dataset. They
-are kept because they are honest records of what was measured, and because
-M17's effect on prompt *length* is nil -- but **the prompted baseline has to
-be re-run on the new prompts before any fine-tuned EX is set beside it**.
-That is $0.77 for nano, and it is not optional; it is the difference between
-a comparison and two unrelated numbers. Re-running was deliberately not done
-in the same pass as the fix, so the prompt recipe settles first.
+**`api-baseline-v3` is the only row on the current prompts, and it is the
+only one a fine-tuned number may be set beside.** A5 -- every compared model
+sees identical prompts -- is the assumption the whole headline comparison
+rests on, and M11 and M17 each broke it for everything measured earlier. The
+older nano rows are kept as honest records of what was measured when, and
+M18 is the reason they are not simply deleted: comparing them is how the
+noise floor got measured a third time.
+
+**`api-baseline-mini` is still on pre-M11 prompts** -- two prompt recipes
+behind, not one. It is the stronger prompted baseline and therefore the more
+demanding comparison, so it has to be re-run before it appears beside a
+fine-tuned EX. That is $3.12, and the decision is deferred rather than
+forgotten (open item 0). Note what M18 implies about the expected result:
+nano moved +0.39 across M11 and +0.07 across M17, both inside noise, so the
+re-run is owed to A5's bookkeeping and not because the number is expected to
+move.
 
 **The data pipeline is complete; nothing model-side has been run.** Both
 benchmarks are on disk (~9.1 GB) and `make dataset` writes all three splits:
@@ -717,11 +822,14 @@ empty for want of a GPU rather than for want of data.
 
 Ordered by what would change a conclusion, not by effort.
 
-0. **The prompted baselines need re-running on post-M17 prompts** ($0.77 for
-   nano). A5 requires every compared model to see identical prompts, and the
-   three rows in section 5 predate the prompt change. Until this is redone
-   there is no valid number to set a fine-tuned EX beside -- this is a
-   correctness blocker on the headline claim, not a nicety.
+0. **The mini baseline is still on pre-M11 prompts** ($3.12 to re-run).
+   Nano is done (M18, `api-baseline-v3`), which unblocks the headline
+   comparison for the cheaper baseline. Mini is two prompt recipes behind and
+   is the *stronger* prompted baseline, so leaving it stale means the most
+   demanding comparison in the project is the one that violates A5. Not a
+   blocker on the fine-tuned run itself, which only needs a comparable
+   baseline to exist -- but a blocker on quoting mini's 60.89% beside
+   anything built from the current dataset.
 1. **The generalisation *number* is unmeasured** (R1). Spider itself is now
    on disk and verified (M15), and its train split is in the SFT mix, but no
    fine-tuned model exists yet, so every Spider EX column is still empty.

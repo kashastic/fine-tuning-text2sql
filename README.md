@@ -26,32 +26,44 @@ from `results/*/summary.json`.
 | Qwen3-4B | SFT + reasoning traces | | | | | |
 | Qwen3-4B | SFT + GRPO | | | | | |
 | Qwen3-4B | SFT + GRPO + self-consistency (8) | | | | | |
-| gpt-5.4-mini | Prompted (API baseline) | 60.89 | 67.35 / 51.29 / 50.34 | | 2713 | 1.884 |
-| gpt-5.4-nano | Prompted (API baseline) | 56.19 | 63.03 / 45.91 / 45.52 | | 2702 | 0.462 |
+| gpt-5.4-mini | Prompted (API baseline) | 60.89 ‡ | 67.35 / 51.29 / 50.34 | | 2713 | 1.884 |
+| gpt-5.4-nano | Prompted (API baseline) | 56.26 | 63.57 / 45.91 / 42.76 | | 3137 | 0.470 |
 
 Execution accuracy (EX) uses the official BIRD metric: run both queries, compare
 the result sets as sets.
 
-> **Both API rows predate the schema-linking fixes below and must be re-run
-> before any fine-tuned number joins this table.** They were measured on
-> identical prompts *to each other*, so the nano/mini comparison stands. But
-> the prompts changed afterwards, and the one assumption this whole table
-> rests on is that every model compared sees the same prompt — so a
-> fine-tuned EX set beside these would be two unrelated numbers, not a
-> comparison. Re-running nano costs $0.77. They are left here because they
-> are honest records of what was measured, not because they are current.
+> **‡ The mini row is still on older prompts and must be re-run ($3.12)
+> before a fine-tuned number is set beside it.** The nano row is current: it
+> was re-measured on the prompts the fine-tuned model will see
+> (`results/api-baseline-v3/`). The assumption this whole table rests on is
+> that every model compared sees the same prompt, and the schema-linking
+> fixes below changed the prompts — so mini's 60.89% and a fine-tuned EX
+> would be two unrelated numbers, not a comparison. The nano/mini comparison
+> *to each other* still stands; both were measured on prompts identical to
+> each other.
 
 Both API rows are real measured runs over all 1,534 BIRD dev questions
-(`results/api-baseline/`, `results/api-baseline-mini/`), on identical prompts.
-nano: 96.94% executed, every output parsed, $0.77 total. mini: 98.63%
-executed, $3.12 total, +5.09 EX for 4x the money — and it gains most on the
-hard end (+6.89 challenging, +6.03 moderate, +4.32 simple), which is where
-schema linking and multi-join reasoning live.
+(`results/api-baseline-v3/`, `results/api-baseline-mini/`). nano: 97.39%
+executed, $0.78 total. mini: 98.63% executed, $3.12 total, +4.63 EX for 4x
+the money — and it gains most on the hard end, which is where schema linking
+and multi-join reasoning live. (The mini figures come from the older prompts;
+see ‡ above.)
 
-The two models agree more than the gap suggests: 51.4% of questions both get
-right, 34.7% neither does, and an oracle picking the better of the two would
-score 65.25%. That 34.7% shared-failure core is the real target — it is not
-fixed by spending more on a bigger prompted model.
+**Re-running nano across a prompt change is how this project knows what a
+real difference looks like.** Three nano runs now exist on three prompt
+recipes: 55.80% → 56.19% → 56.26%. None of those steps is significant, and
+the 1,027 questions whose prompts did not change between the last two flipped
+by 9.9% anyway — the API disagreeing with itself, since it refuses greedy
+decoding. The useful number from that exercise is not the EX: a question
+whose prompt is missing a column the answer needs scores **24.39%**, against
+**58.03%** when the prompt is complete (M18).
+
+The two models agree more than the gap suggests: 50.98% of questions both get
+right, 33.83% neither does, and an oracle picking the better of the two would
+score 66.17%. That 33.83% shared-failure core is the real target — it is not
+fixed by spending more on a bigger prompted model. (Recomputed against the
+current nano run; the two were measured on different prompt recipes, so read
+it as indicative.)
 
 **Read every single-run figure here with a ±1.5 point band.** This API
 refuses `temperature=0` (*"only the default (1) value is supported"*) and
@@ -388,9 +400,10 @@ src/text2sql/
   pricing.py        token and GPU-hour costs for the cost column
 scripts/            download, build, generate, evaluate, train x2, merge,
                     error analysis, latency bench, results table,
-                    schema_recall.py (what trimming costs and gains)
+                    schema_recall.py (what trimming costs and gains),
+                    compare_runs.py (is a difference real, or this API's noise?)
 serve/              FastAPI service + Gradio demo
-tests/              105 tests on a fixture benchmark; no GPU, no downloads
+tests/              109 tests on a fixture benchmark; no GPU, no downloads
 ```
 
 ## Reproduction
