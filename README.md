@@ -26,44 +26,46 @@ from `results/*/summary.json`.
 | Qwen3-4B | SFT + reasoning traces | | | | | |
 | Qwen3-4B | SFT + GRPO | | | | | |
 | Qwen3-4B | SFT + GRPO + self-consistency (8) | | | | | |
-| gpt-5.4-mini | Prompted (API baseline) | 60.89 ‡ | 67.35 / 51.29 / 50.34 | | 2713 | 1.884 |
+| gpt-5.4-mini | Prompted (API baseline) | 61.73 | 68.43 / 52.37 / 48.97 | | 2398 | 1.882 |
 | gpt-5.4-nano | Prompted (API baseline) | 56.26 | 63.57 / 45.91 / 42.76 | | 3137 | 0.470 |
 
 Execution accuracy (EX) uses the official BIRD metric: run both queries, compare
 the result sets as sets.
 
-> **‡ The mini row is still on older prompts and must be re-run ($3.12)
-> before a fine-tuned number is set beside it.** The nano row is current: it
-> was re-measured on the prompts the fine-tuned model will see
-> (`results/api-baseline-v3/`). The assumption this whole table rests on is
-> that every model compared sees the same prompt, and the schema-linking
-> fixes below changed the prompts — so mini's 60.89% and a fine-tuned EX
-> would be two unrelated numbers, not a comparison. The nano/mini comparison
-> *to each other* still stands; both were measured on prompts identical to
-> each other.
+> **Both API rows were measured on the prompts the fine-tuned model will
+> see** (`results/api-baseline-v3/`, `results/api-baseline-mini-v3/`). The
+> assumption this whole table rests on is that every model compared sees the
+> same prompt, and the schema-linking fixes below changed the prompts twice,
+> so both baselines were re-run — $3.90 in total. Four earlier runs on older
+> prompts are kept in `docs/MEASUREMENTS.md` rather than deleted: comparing
+> them is how this project measured its own noise floor.
 
-Both API rows are real measured runs over all 1,534 BIRD dev questions
-(`results/api-baseline-v3/`, `results/api-baseline-mini/`). nano: 97.39%
-executed, $0.78 total. mini: 98.63% executed, $3.12 total, +4.63 EX for 4x
-the money — and it gains most on the hard end, which is where schema linking
-and multi-join reasoning live. (The mini figures come from the older prompts;
-see ‡ above.)
+Both API rows are real measured runs over all 1,534 BIRD dev questions.
+nano: 97.39% executed, $0.78. mini: 99.35% executed, $3.12, **+5.48 EX for
+~4x the money** — and it gains most on the hard end, which is where schema
+linking and multi-join reasoning live.
 
-**Re-running nano across a prompt change is how this project knows what a
-real difference looks like.** Three nano runs now exist on three prompt
-recipes: 55.80% → 56.19% → 56.26%. None of those steps is significant, and
-the 1,027 questions whose prompts did not change between the last two flipped
-by 9.9% anyway — the API disagreeing with itself, since it refuses greedy
-decoding. The useful number from that exercise is not the EX: a question
-whose prompt is missing a column the answer needs scores **24.39%**, against
-**58.03%** when the prompt is complete (M18).
+**Re-running these across prompt changes is how the project knows what a real
+difference looks like.** Six prompted runs now exist across three prompt
+recipes, and none of the prompt-to-prompt steps is statistically significant
+— while the questions whose prompts did *not* change flipped by 7–10% anyway,
+because this API refuses greedy decoding and samples at temperature 1. Two
+things came out of that which are worth more than the re-baselining:
 
-The two models agree more than the gap suggests: 50.98% of questions both get
-right, 33.83% neither does, and an oracle picking the better of the two would
-score 66.17%. That 33.83% shared-failure core is the real target — it is not
-fixed by spending more on a bigger prompted model. (Recomputed against the
-current nano run; the two were measured on different prompt recipes, so read
-it as indicative.)
+- **The noise floor is model-specific.** nano churns 9.9% on byte-identical
+  prompts, mini 7.2% — bands of ±1.6 and ±1.4 EX points. A single-run
+  difference smaller than that is not evidence.
+- **A prompt missing a column the answer needs costs nano 33 EX points and
+  mini 24** (57.17% → 23.81%, 62.40% → 38.10%). Paying 4x for a bigger model
+  buys back only part of it, so schema linking is an *information* problem
+  before it is a capability problem. This is the measurement that justifies
+  the schema work below.
+
+The two models agree more than the gap suggests: 51.11% of questions both get
+right, 33.12% neither does, and an oracle picking the better of the two would
+score 66.88%. That 33.12% shared-failure core is the real target — it is not
+fixed by spending more on a bigger prompted model. Both rows sit on the same
+prompts, so this comparison is exact rather than indicative.
 
 **Read every single-run figure here with a ±1.5 point band.** This API
 refuses `temperature=0` (*"only the default (1) value is supported"*) and

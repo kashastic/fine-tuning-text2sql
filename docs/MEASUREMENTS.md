@@ -295,6 +295,15 @@ the standard error on a net difference is about `sqrt(129)/1534` ~ **0.74 EX
 points, so a 2-sigma band of roughly +/-1.5 points.** On this backend, **a
 single-run EX difference under about 2 points is not evidence of anything.**
 
+**Scope correction (M19): this was measured on nano only, and the floor turns
+out to be model-specific.** Measured on byte-identical prompts, nano churns
+9.93% and mini 7.16%, for bands of +/-1.61 and +/-1.37 points respectively.
+The +/-1.5 quoted above is a nano number that happens to fall between the
+two; M19 has the per-model figures and they are the ones to use. Nothing
+here is known about a self-hosted model's floor -- vLLM at `temperature=0`
+is genuinely greedy and should be far tighter, which is to be measured, not
+assumed.
+
 Mitigations, in order of honesty: pass `seed` (now done, best-effort);
 report the band; for a number that has to be defended, average over k runs
 (the standard error falls as `1/sqrt(k)`) or use self-consistency, which
@@ -633,6 +642,71 @@ Qwen3 tokens, but the mean moved 35, because the added columns land on
 exactly the 507 prompts that needed them. Cost per 1k queries EUR 0.462 ->
 0.470.
 
+### M19 — The mini baseline re-run, and the noise floor is model-specific (measured, full dev)
+
+Mini was two prompt recipes behind, so its re-run
+(`results/api-baseline-mini-v3/`, $3.12) spans **both** M11 and M17 rather
+than either alone: 654 of 1,534 prompts changed (42.6%), 880 are
+byte-identical. Same settings as the original.
+
+**EX 61.73% against 60.89%, net +13 questions, exact McNemar p = 0.2459.**
+
+| arm | n | EX before | EX after | wrong->right | right->wrong | net | churn | p |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| overall | 1,534 | 60.89% | 61.73% | 60 | 47 | +13 | 6.98% | 0.2459 |
+| prompt byte-identical (control) | 880 | 61.70% | 62.05% | 33 | 30 | +3 | 7.16% | 0.8013 |
+| prompt changed (treatment) | 654 | 59.79% | 61.31% | 27 | 17 | **+10** | 6.73% | 0.1742 |
+
+The treatment arm is the largest and cleanest signal in the project so far --
+net +10 on 654 prompts, +1.52 points -- and it still does not reach
+significance. Two prompt fixes, measured on the stronger model, over the
+biggest arm available: p = 0.17.
+
+**The finding that corrects an earlier one: the noise floor is
+model-specific, and M12 measured only nano.** Mini's control arm churns
+**7.16%** against nano's 9.93%, on the same questions in the same split.
+Rescaling each control arm to full dev:
+
+| model | control churn | discordant / 1,534 | SE | 2-sigma band |
+| --- | ---: | ---: | ---: | ---: |
+| gpt-5.4-nano | 9.93% | ~152 | 0.80 | **+/-1.61 EX** |
+| gpt-5.4-mini | 7.16% | ~110 | 0.68 | **+/-1.37 EX** |
+
+So M12's "+/-1.5 points" is a nano figure that happens to sit between the
+two. Use +/-1.6 for nano and +/-1.4 for mini, and do not assume either
+transfers to a self-hosted model: vLLM at `temperature=0` is greedy and
+should be far tighter, which is a thing to measure rather than assume.
+Mini's +0.84 is inside its own band, consistent with p = 0.2459.
+
+**A missing column hurts both models, and the bigger one only partly
+compensates.** Grouping by whether the current prompt is complete (1,492
+complete, 42 still missing something the gold needs):
+
+| model | complete prompt | incomplete prompt | gap | incomplete as a fraction of its own rate |
+| --- | ---: | ---: | ---: | ---: |
+| gpt-5.4-nano | 57.17% | 23.81% | -33.36 | 0.42 |
+| gpt-5.4-mini | 62.40% | 38.10% | -24.30 | 0.61 |
+
+(The 57.17% is the same measurement as M18's 58.03%, over a different
+grouping: here the 84 M17 repaired are counted as complete, which is what
+they now are.)
+
+**This is the argument for the schema-linking work, stated as a measurement.**
+Spending 4x on a bigger prompted model recovers part of the penalty for a
+missing column -- mini retains 61% of its own accuracy where nano retains 42%
+-- but **most of the penalty survives the upgrade**. It is an information
+problem before it is a capability problem. The shared-failure rate says the
+same thing from the other side: both models are wrong on **57%** of the 42
+incomplete prompts against **32%** of the 1,492 complete ones.
+
+**Both prompted rows are now on the current prompts**, so A5 holds across
+them and the two-model comparison is finally legitimate rather than
+indicative: mini is **+5.48 EX** over nano for ~4x the cost, 51.11% of
+questions both get right, 33.12% neither does, and an oracle choosing the
+better of the two would score **66.88%**. That 33.12% shared-failure core is
+the target for fine-tuning, and it is not addressable by spending more on a
+prompted model.
+
 ## 3. Decisions
 
 **D1 — Always quote identifiers.** Quoting only unusual-looking names made
@@ -788,9 +862,10 @@ are open right now:
 | `api-baseline` | gpt-5.4-nano | pre-M11 selection | 55.80% | $0.77 | the first measured baseline |
 | `api-baseline-v2` | gpt-5.4-nano | post-M11 selection | 56.19% | $0.77 | +0.39 is **inside** the noise band (M12) |
 | `api-baseline-v3` | gpt-5.4-nano | **current (post-M17)** | 56.26% | $0.78 | **the comparable nano row** (M18) |
-| `api-baseline-mini` | gpt-5.4-mini | pre-M11 selection | 60.89% | $3.12 | stale prompts; needs a re-run (open item 0) |
+| `api-baseline-mini` | gpt-5.4-mini | pre-M11 selection | 60.89% | $3.12 | superseded by `-mini-v3` |
+| `api-baseline-mini-v3` | gpt-5.4-mini | **current (post-M17)** | 61.73% | $3.12 | **the comparable mini row** (M19) |
 
-Total API spend to date: **$5.44**. Every GPU-side row (zero-shot base, SFT
+Total API spend to date: **$8.56**. Every GPU-side row (zero-shot base, SFT
 x2, GRPO, self-consistency) is unrun.
 
 **`api-baseline-v3` is the only row on the current prompts, and it is the
@@ -801,14 +876,13 @@ older nano rows are kept as honest records of what was measured when, and
 M18 is the reason they are not simply deleted: comparing them is how the
 noise floor got measured a third time.
 
-**`api-baseline-mini` is still on pre-M11 prompts** -- two prompt recipes
-behind, not one. It is the stronger prompted baseline and therefore the more
-demanding comparison, so it has to be re-run before it appears beside a
-fine-tuned EX. That is $3.12, and the decision is deferred rather than
-forgotten (open item 0). Note what M18 implies about the expected result:
-nano moved +0.39 across M11 and +0.07 across M17, both inside noise, so the
-re-run is owed to A5's bookkeeping and not because the number is expected to
-move.
+**Both prompted rows are now on the current prompts** (`api-baseline-v3` and
+`api-baseline-mini-v3`), so A5 holds across them and across anything built
+from the current dataset. The four superseded rows are kept deliberately:
+comparing them is how the noise floor was measured three times and how M19
+established that the floor differs by model. Every prompt change from here
+costs $3.90 to re-baseline, which is the price of A5 and is cheap against
+one GPU hour.
 
 **The data pipeline is complete; nothing model-side has been run.** Both
 benchmarks are on disk (~9.1 GB) and `make dataset` writes all three splits:
@@ -822,14 +896,13 @@ empty for want of a GPU rather than for want of data.
 
 Ordered by what would change a conclusion, not by effort.
 
-0. **The mini baseline is still on pre-M11 prompts** ($3.12 to re-run).
-   Nano is done (M18, `api-baseline-v3`), which unblocks the headline
-   comparison for the cheaper baseline. Mini is two prompt recipes behind and
-   is the *stronger* prompted baseline, so leaving it stale means the most
-   demanding comparison in the project is the one that violates A5. Not a
-   blocker on the fine-tuned run itself, which only needs a comparable
-   baseline to exist -- but a blocker on quoting mini's 60.89% beside
-   anything built from the current dataset.
+0. **DONE (M18, M19).** Both prompted baselines are re-run on the current
+   prompts: nano 56.26%, mini 61.73%. A5 holds across them, so a fine-tuned
+   EX now has valid numbers to sit beside. The by-product is worth more than
+   the re-baselining: the noise floor is model-specific (+/-1.61 nano,
+   +/-1.37 mini), and a prompt missing a needed column costs nano 33 EX
+   points and mini 24 -- an information problem that a 4x spend only partly
+   buys back.
 1. **The generalisation *number* is unmeasured** (R1). Spider itself is now
    on disk and verified (M15), and its train split is in the SFT mix, but no
    fine-tuned model exists yet, so every Spider EX column is still empty.
