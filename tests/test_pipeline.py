@@ -116,7 +116,8 @@ def test_self_consistency_beats_a_single_bad_sample(tmp_path: Path, data_root: P
 @pytest.mark.parametrize("script", [
     "download_data.py", "build_dataset.py", "generate.py", "evaluate.py",
     "train_sft.py", "train_grpo.py", "merge_lora.py", "error_analysis.py",
-    "bench_latency.py", "make_results_table.py",
+    "bench_latency.py", "make_results_table.py", "schema_recall.py",
+    "compare_runs.py",
 ])
 def test_every_script_has_working_help(script: str):
     result = run_script(script, "--help")
