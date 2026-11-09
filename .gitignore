@@ -27,3 +27,4 @@ build/
 
 # os
 .DS_Store
+data/cache/

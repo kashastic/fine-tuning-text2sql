@@ -32,6 +32,15 @@ from `results/*/summary.json`.
 Execution accuracy (EX) uses the official BIRD metric: run both queries, compare
 the result sets as sets.
 
+> **Both API rows predate the schema-linking fixes below and must be re-run
+> before any fine-tuned number joins this table.** They were measured on
+> identical prompts *to each other*, so the nano/mini comparison stands. But
+> the prompts changed afterwards, and the one assumption this whole table
+> rests on is that every model compared sees the same prompt — so a
+> fine-tuned EX set beside these would be two unrelated numbers, not a
+> comparison. Re-running nano costs $0.77. They are left here because they
+> are honest records of what was measured, not because they are current.
+
 Both API rows are real measured runs over all 1,534 BIRD dev questions
 (`results/api-baseline/`, `results/api-baseline-mini/`), on identical prompts.
 nano: 96.94% executed, every output parsed, $0.77 total. mini: 98.63%
@@ -142,47 +151,85 @@ Two things it does that matter more than they look:
   BIRD dev is 3,671 tokens and the longest prompt-plus-gold 3,828, so nothing
   is truncated at either trainer's limit.
 
-  What that costs, measured over all 1,534 dev prompts: 85.8% of tables and
-  **65% of columns** survive, and 49.4% of questions have at least one column
-  hidden. Most of that is harmless -- the hidden column was irrelevant -- but
-  where a column the gold query *needs* goes missing, the API baseline scores
-  ~41% against ~57.5% on complete prompts. Of the 303 questions that lost a
-  table, **none** lost a table the gold needs: table selection is sound, and
-  every real loss is a dropped column.
+  What that costs has to be measured against the columns the selector
+  actually chose, not by searching the rendered prompt for the gold's column
+  names. The repo did the latter for two sessions, and it was wrong in both
+  directions: it reported 114 questions missing a needed column where the
+  true number was 125, and **zero** questions missing a needed *table* where
+  the true number was 24. A dropped table's name still appears in the prompt
+  inside other tables' foreign-key clauses, so the proxy could not see the
+  worse of the two failures. `scripts/schema_recall.py` now measures it
+  exactly; the earlier figure is kept in `docs/MEASUREMENTS.md` with the
+  correction, because the mistake is more instructive than the number.
 
-  So column selection runs in three tiers, chosen by measuring which needed
-  columns were being dropped and why:
+  Column selection then runs in tiers, each one chosen by looking at which
+  needed columns were being dropped and why:
 
-  1. **Keys** -- primary and foreign -- are never dropped.
-  2. **Columns the question or evidence names verbatim** are never dropped
-     either, and the budget stretches to fit them. This was the largest
-     recoverable loss: 54 of 165 missing columns were *explicitly named in
-     the question* and discarded anyway, because matches used to be filled in
-     schema order until the budget ran out.
+  1. **Keys are never dropped** -- primary, outbound foreign, *and inbound*:
+     columns other tables point at. A join has two ends and only one declares
+     the constraint, so `legalities.uuid REFERENCES cards(uuid)` makes `uuid`
+     a key of `cards`, which declares no foreign key and whose primary key is
+     `id`. Missing that, `cards.uuid` competed as an ordinary column against
+     a question about card rarity and lost -- and the prompt then showed both
+     tables with no way to join them. **59 questions in BIRD dev were that
+     one column.**
+  2. **Columns the question names, by name or by content.** A verbatim name
+     is never dropped and the budget stretches to fit it. Neither is a column
+     whose *values* the question quotes: "the school run by Kacey Gibson"
+     needs `AdmFName1`, and nothing about that question resembles that
+     column's name. See value linking below.
   3. **Everything else competes on match strength**, with schema order
-     breaking ties only, and a 4-character shared prefix counts as a match so
-     "schools that were opened" reaches `OpenDate`.
+     breaking ties only, and a 4-character shared prefix counting as a match
+     so "schools that were opened" reaches `OpenDate`. The same prefix rule
+     applies to **table** names, which it originally did not: `race != races`
+     dropped the `races` table outright on "the race No. 901", and a lost
+     table is strictly worse than a lost column, since no column tier can
+     recover it.
 
-  That took questions missing a needed column from **165 (10.8%) to 114
-  (7.4%)** while columns kept went 64.9% -> 65.0% -- a 31% cut in the recall
-  loss for 0.1% more prompt. The longest prompt grew 3,671 -> 3,823 tokens,
-  still clear of 4,096.
+  Measured on full BIRD dev, one fix at a time:
 
-  Re-running the baseline on the new prompts moved EX 55.80% -> 56.19%, which
-  is **inside the noise band and is not claimed as a gain**: 76 answers
-  improved and 70 regressed (McNemar p = 0.68). The coverage improvement is
-  measured; its accuracy effect is positive in direction only. It is kept
-  because the same prompts are the training data, where a missing column is
-  not noise but a wrong label.
+  | | missing a column | missing a table |
+  | --- | ---: | ---: |
+  | before | 125 (8.15%) | 24 (1.56%) |
+  | + inflected table names | 116 (7.56%) | 15 (0.98%) |
+  | + value linking | 97 (6.32%) | 6 (0.39%) |
+  | **+ inbound foreign keys** | **42 (2.74%)** | **6 (0.39%)** |
+
+  **A 66% cut in column loss and a 75% cut in table loss, for five median
+  tokens.** The tail does not move at all: p90, p99, the longest prompt
+  (3,810) and the longest prompt-plus-gold (3,878) are unchanged, and 0% of
+  prompts exceed 4,096 either way. The gain is not bought with width -- a
+  protected key or a value-matched column *displaces* a weak name match
+  inside the same budget rather than adding to it.
 
   Raising `max_columns` instead would be the wrong fix: 30 puts p99 at 4,134,
   past GRPO's 4,096 limit, and raising it for the baseline alone would mean
-  the baseline and the fine-tuned model no longer see the same prompts. All of
-  this matters more for training than for scoring -- these same prompts become
-  the SFT and GRPO data, where a schema missing the needed column teaches the
-  model to invent column names and earns ~0 GRPO reward whatever it does.
-  The remaining 114 need **value** linking ("directly funded" is a value of
-  `Charter`, not a column name); see `docs/MEASUREMENTS.md`.
+  the baseline and the fine-tuned model no longer see the same prompts. All
+  of this matters more for training than for scoring -- these same prompts
+  become the SFT and GRPO data, where a schema missing the needed column
+  teaches the model to invent column names and earns ~0 GRPO reward whatever
+  it does. The 42 that remain need meaning rather than matching ("under
+  whose administration" -> `AdmFName1`), which is an embedding or LLM linker.
+* **Value linking.** Schema trimming scores columns on how much their *name*
+  overlaps the question, which cannot see the largest class of failure left:
+  the question naming a column's **contents**. "Continuation schools" needs
+  `frpm.Educational Option Type`, whose value is "Continuation School";
+  "Lucas di Grassi's Q1 result" needs the `drivers` table, which no
+  name-based score reaches at all. So `text2sql.values` indexes each
+  database's distinct short text values once and looks the question's word
+  n-grams up in that index -- a hit means the question is quoting the
+  database, which is a far stronger signal than any name overlap.
+
+  It stays affordable on BIRD's 30 GB of training databases by indexing only
+  TEXT columns and only short values, capping distinct values per column, and
+  caching to disk keyed by file size and mtime: **7.7 seconds for all 11
+  BIRD dev databases**, 0.5–19.3s each for the four largest training ones,
+  and nothing on a rebuild. Two details matter more than they look --
+  singularising both sides, or "continuation schools" never meets
+  "Continuation School"; and resolving overlapping matches longest-first,
+  because "Los Angeles" identifies `schools.City` while "Angeles" alone is
+  somebody's surname. It fails open: an unreadable database costs the hits,
+  not the prompt.
 * **One source of truth for prompt shape.** `serve/app.py` reads
   `max_tables`, `max_columns`, `sample_values` and `style` from
   `configs/data.yaml` -- the same file the dataset build reads -- and reports
@@ -331,6 +378,7 @@ docs/
 src/text2sql/
   data.py           BIRD / Spider -> one Example shape
   schema.py         DDL from sqlite_master, schema trimming, sample values
+  values.py         value linking: which columns' *contents* the question names
   prompts.py        the single prompt builder every model goes through
   postprocess.py    pulling SQL out of whatever the model actually said
   sql_exec.py       read-only SQLite execution with a deadline, result comparison
@@ -339,9 +387,10 @@ src/text2sql/
   backends.py       vLLM / OpenAI-compatible / hosted OpenAI / Anthropic / transformers
   pricing.py        token and GPU-hour costs for the cost column
 scripts/            download, build, generate, evaluate, train x2, merge,
-                    error analysis, latency bench, results table
+                    error analysis, latency bench, results table,
+                    schema_recall.py (what trimming costs and gains)
 serve/              FastAPI service + Gradio demo
-tests/              95 tests on a fixture benchmark; no GPU, no downloads
+tests/              105 tests on a fixture benchmark; no GPU, no downloads
 ```
 
 ## Reproduction

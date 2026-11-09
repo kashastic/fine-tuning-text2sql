@@ -32,7 +32,7 @@ LIMIT_FLAG := $(if $(LIMIT),--limit $(LIMIT),)
 
 .PHONY: help install install-train install-serve data verify dataset dataset-reasoning \
         baseline-zeroshot baseline-api sft sft-reasoning grpo merge serve api demo \
-        eval generalise errors latency results test lint clean
+        eval generalise recall errors latency results test lint clean
 
 help:
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
@@ -94,6 +94,10 @@ demo:             ## week 6: the Gradio demo (needs `make api` running)
 	$(PY) serve/demo_gradio.py --api http://localhost:$(API_PORT)
 
 RUN ?= $(RESULTS)/zeroshot-base
+recall:           ## what schema trimming costs: needed columns/tables lost
+	$(PY) scripts/schema_recall.py --dataset $(DATASET) --split $(SPLIT) \
+		--data-root $(DATA_ROOT) --max-columns $(MAX_COLUMNS) \
+		--tokenizer $(BASE_MODEL) $(LIMIT_FLAG)
 eval:             ## score an existing generations file
 	$(PY) scripts/evaluate.py --run $(RUN) --gpu $(GPU)
 generalise:       ## the cross-benchmark check: ADAPTER on Spider dev

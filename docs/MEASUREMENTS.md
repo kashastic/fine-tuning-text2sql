@@ -53,10 +53,15 @@ the full dev set, so the percentages carry sampling error of a few points.
 | 16 | 1932 | 2780 | 3397 | 3407 | 6.0% | 0.0% | 97.5% |
 | 12 | 1761 | 2585 | 3171 | 3181 | 5.7% | 0.0% | 97.2% |
 
-**Assumption A9: "gold columns kept" is a substring proxy**, not a
-schema-linking metric. It asks whether the gold SQL's column names appear in
-the rendered prompt text. It over-counts: a short column name can appear as a
-substring of an unrelated one. Do not publish it as a recall figure.
+**Assumption A9 -- RETIRED, see M16.** The "gold columns kept" column above
+is a substring proxy, not a schema-linking metric: it asks whether the gold
+SQL's column names appear anywhere in the rendered prompt text. A9 warned it
+over-counts; M16 measured by how much. It under-reported column loss (114
+against a true 125) and reported **zero** table loss where there were **24**,
+which sent the whole M11 effort at columns and left a worse bug untouched for
+two sessions. Recall is now measured against the selected column set by
+`scripts/schema_recall.py`. The prompt-length columns in this table are
+unaffected and still stand; the last column should not be quoted.
 
 On the **full** 1,534 at `max_columns: 20`: longest prompt **3,671** tokens,
 longest prompt-plus-gold **3,828**. Nothing truncates at either trainer limit.
@@ -89,6 +94,9 @@ therefore costs roughly `0.108 x (57.56 - 41.21)` = **~1.8 EX points**.
 (case-insensitive, quoted and bare forms) against the database's real column
 names. It can miss a column referenced only through an alias, and can
 over-match a short name. Treat 165 as approximate, and the direction as solid.
+**Superseded by M16**, which tightened exactly this: bare SQL keywords are no
+longer counted as column references (that alone was worth 248 phantom
+losses), and only tables the gold actually names are audited.
 
 **Discarded measurement:** the same script bucketed EX by number of tables in
 the gold query and put 1,469 of 1,534 questions in a "0 tables" bucket. The
@@ -402,6 +410,131 @@ the single-statement policy. So BIRD's 428 drops are BIRD's annotation
 quality; the sandbox is not a confound. M14 inferred this from error strings,
 which was suggestive. This is a control.
 
+### M16 — The recall proxy was wrong, and so was one of M4's conclusions
+
+M4 and M11 measured "does the prompt still contain the columns the gold
+needs" by searching the **rendered prompt text** for the gold's column names
+(A9, which flagged it as a proxy that over-counts). It is now measured
+against the **selected column set**: a gold column counts as present only
+when that exact column of that exact table was chosen. The script is
+`scripts/schema_recall.py`, so it is reproducible rather than re-derived by
+hand a fourth time.
+
+Same code, same 1,534 questions, same settings -- only the metric changed:
+
+| | proxy (A9) | exact |
+| --- | ---: | ---: |
+| Questions missing a needed column | 114 (7.4%) | **125 (8.15%)** |
+| Questions missing a needed **table** | **0** | **24 (1.56%)** |
+
+Two corrections follow, and the second is the one that mattered.
+
+**M11's 114 was optimistic.** A short column name appears as a substring of
+unrelated text, so the proxy counted columns as present that were never
+selected. The true figure was 125.
+
+**M4's "of the 303 questions that lost a table, *none* lost a table the gold
+needs" was wrong.** 24 did. The proxy could not see it: a dropped table's
+name still appears in the prompt inside the foreign-key clauses of other
+tables. "Table selection is sound, and every real loss is a dropped column"
+was a wrong conclusion drawn from a blunt instrument, and it aimed all of
+M11's work at columns while a worse bug sat untouched.
+
+Getting the metric right needed care in the other direction too. A first
+version counted every bare word of the gold as a possible column reference
+and reported **373** losses: SQL keywords collide with real BIRD column names
+(`count`, `order`, `date`, `year`, `name`, `max`), so `SELECT COUNT(*)`
+registered as a reference to a column called `count`. Filtering bare keywords
+-- quoted names are kept, since the quotes are what prove the author meant a
+column -- and auditing only tables the gold actually names brought it to 125.
+**248 of those 373 were the measurement's own bug**, which is a fair warning
+about how easily this particular number can be made to say anything.
+
+### M17 — Value linking, inbound keys, inflected table names (measured, full dev)
+
+Three fixes, measured one at a time on BIRD dev at `max_tables: 8`,
+`max_columns: 20`. The baseline row is the committed code, re-measured in a
+detached worktree at `HEAD` rather than quoted from M11:
+
+| | missing a column | missing a table | columns shown |
+| --- | ---: | ---: | ---: |
+| baseline (committed) | 125 (8.15%) | 24 (1.56%) | 65.02% |
+| + inflected table names | 116 (7.56%) | 15 (0.98%) | 66.31% |
+| + value linking | 97 (6.32%) | 6 (0.39%) | 66.28% |
+| **+ inbound foreign keys** | **42 (2.74%)** | **6 (0.39%)** | **66.28%** |
+
+**A 66% cut in column loss and a 75% cut in table loss.**
+
+**Inbound foreign keys -- the largest single win (97 -> 42).** A join has two
+ends and only one of them declares the constraint. `legalities.uuid
+REFERENCES cards(uuid)` makes `uuid` a key column of `cards`, but `cards`
+declares no foreign key and its primary key is `id`, so `cards.uuid` was
+scored as an ordinary column -- and lost, because nothing in a question about
+rarity resembles "uuid". **59 of the 97 remaining losses were that one
+column.** The prompt showed both tables and no way to join them. Tier 1
+already claimed to prevent exactly this ("without them a join stops being
+expressible"); it protected only the outbound half.
+
+**Inflected table names (24 -> 15 lost tables).** Column scoring took a
+4-character shared prefix from M11; table scoring still used exact token
+equality. So `race != races` and "the race No. 901" dropped the `races` table
+outright. A lost table is strictly worse than a lost column: no column tier
+can recover a table that is not in the prompt.
+
+**Value linking (the remaining 9 lost tables, and 19 columns).** The question
+often names a column's *contents* rather than its name. "The school run by
+Kacey Gibson" needs `schools.AdmFName1`; "continuation schools" needs
+`frpm.Educational Option Type`, whose value is "Continuation School"; "Lucas
+di Grassi's Q1 result" needs the `drivers` table, which no name-based score
+can reach at all. `text2sql.values` indexes each database's distinct short
+text values once, then looks the question's word n-grams up in that index.
+
+Two details earn their keep, both found by reading wrong answers:
+singularising both sides, or "continuation schools" never meets "Continuation
+School"; and resolving overlapping matches longest-first, because "Los
+Angeles" identifies `schools.City` while "Angeles" alone is somebody's
+surname in `AdmLName1`.
+
+**Cost: essentially nothing.** Real Qwen3 tokenizer, full dev, the same
+prompts the model would see:
+
+| | baseline | after |
+| --- | ---: | ---: |
+| p50 prompt tokens | 1,945 | 1,950 |
+| p90 / p99 | 3,033 / 3,680 | 3,033 / 3,680 |
+| longest prompt | 3,810 | 3,810 |
+| longest prompt + gold | 3,878 | 3,878 |
+| over 4,096 | 0% | **0%** |
+
+**Five median tokens, and the tail does not move.** The gain is not bought
+with width: a protected key or a value-matched column *displaces* a weak name
+match inside the same budget instead of adding to it. That is why "columns
+shown" moved only 65.02% -> 66.28% and the longest prompt is unchanged.
+
+(These absolute token figures are a few tokens below M2's and M11's for the
+same revision, because this script joins the prompt's messages slightly
+differently. The before/after pair above is internally consistent, which is
+what the comparison needs; do not mix a number from here with one from M2.)
+
+Index build cost, measured: **7.7s for all 11 BIRD dev databases** (26 MB of
+cache), and 0.5-19.3s each for BIRD train's four largest (4.3-5.2 GB). Cached
+on disk keyed by file size and mtime, so a rebuild pays nothing.
+
+Full dataset rebuild with value linking on, cold cache: **53 minutes** for
+all three splits, indexing **242 databases** into **148 MB** of cache under
+`data/cache/` (gitignored). Row counts and drop counts came out identical to
+the pre-M17 build -- 15,697 / 300 / 2,568 and 431 `bad_gold` -- which is the
+expected result: value linking changes what a prompt *contains*, not which
+rows survive. Verified positively rather than assumed: the dev question
+naming "Kacey Gibson" now carries `AdmFName1` in its prompt, which it did
+not before.
+
+**What is left is a semantic long tail.** The 42 survivors have no dominant
+cause -- the most frequent column appears 5 times -- and they need meaning
+rather than matching: "Under whose administration is the school..." needs
+`AdmFName1`, "the type of education offered" needs `EdOpsName`. That is an
+embedding or an LLM linker, not another lexical tier.
+
 ## 3. Decisions
 
 **D1 — Always quote identifiers.** Quoting only unusual-looking names made
@@ -495,6 +628,32 @@ both. Measuring true transfer would mean a BIRD-only run as well, and a
 second 3-5 GPU-hour SFT is not in a 50-100 EUR budget. D15 is what buys back
 the missing guarantee.
 
+**D17 — Measure schema recall against the selected set, and keep the
+script.** The substring proxy was cheap and wrong in a way that hid a whole
+class of bug for two sessions (M16). Recall is now computed from the columns
+the selector actually chose, and lives in `scripts/schema_recall.py` rather
+than being rewritten from scratch each time the question comes up -- it has
+been needed three times, and the third time the previous version was gone.
+The script also reports prompt-token percentiles, because a recall gain that
+pushes prompts past the trainer's limit is not a gain.
+
+**D18 — Value linking indexes whole values, not value tokens.** Indexing
+tokens would make "school" a hit on half of `california_schools`. Whole
+values matched against question n-grams keeps precision high, at the cost of
+missing a value the question paraphrases. Bounded deliberately: TEXT-affinity
+columns only, values of at most 48 characters, at most 20,000 distinct values
+per column, and a value found in more than 8 columns is dropped as
+non-identifying. Those bounds are what keeps a 30 GB training set tractable
+(M17), and they are the reason value linking cannot find a value in a column
+of free text -- which is correct, since a forum post is never the literal a
+question spells out in an equality.
+
+**D19 — Value linking stays on by default, and fails open.** `link_values`
+defaults to true in `schema_for_example`, and any exception while indexing
+is swallowed back to "no value hits". An unreadable or exotic database then
+builds the same prompt it built before, slightly worse, instead of failing a
+16,000-row dataset build at row 9,000.
+
 ---
 
 ## 4. Overfitting and generalisation
@@ -535,6 +694,17 @@ are open right now:
 Total API spend to date: **$4.66**. Every GPU-side row (zero-shot base, SFT
 x2, GRPO, self-consistency) is unrun.
 
+**All three rows above were measured on pre-M17 prompts, and A5 now bites.**
+A5 is the assumption the whole headline comparison rests on: every model
+compared sees identical prompts. M17 changed the prompts, so these baselines
+are no longer comparable with anything built from the current dataset. They
+are kept because they are honest records of what was measured, and because
+M17's effect on prompt *length* is nil -- but **the prompted baseline has to
+be re-run on the new prompts before any fine-tuned EX is set beside it**.
+That is $0.77 for nano, and it is not optional; it is the difference between
+a comparison and two unrelated numbers. Re-running was deliberately not done
+in the same pass as the fix, so the prompt recipe settles first.
+
 **The data pipeline is complete; nothing model-side has been run.** Both
 benchmarks are on disk (~9.1 GB) and `make dataset` writes all three splits:
 15,697 train / 300 val / 2,568 dev, at `max_columns: 20`, so the M11
@@ -547,6 +717,11 @@ empty for want of a GPU rather than for want of data.
 
 Ordered by what would change a conclusion, not by effort.
 
+0. **The prompted baselines need re-running on post-M17 prompts** ($0.77 for
+   nano). A5 requires every compared model to see identical prompts, and the
+   three rows in section 5 predate the prompt change. Until this is redone
+   there is no valid number to set a fine-tuned EX beside -- this is a
+   correctness blocker on the headline claim, not a nicety.
 1. **The generalisation *number* is unmeasured** (R1). Spider itself is now
    on disk and verified (M15), and its train split is in the SFT mix, but no
    fine-tuned model exists yet, so every Spider EX column is still empty.
@@ -557,13 +732,12 @@ Ordered by what would change a conclusion, not by effort.
 3. **Every future ablation needs k runs, not one** (M12): the single-run band
    is +/-1.5 EX points and nothing averages over runs. `--seed` is wired
    through but best-effort.
-4. **114 questions still missing a needed column** (M11, down from 165). The
-   remaining cause is value linking -- "directly funded" is a *value* of
-   `Charter`, not a column name, and "continuation schools" a value of
-   `Educational Option Type`. The standard fix is a cached per-database index
-   of distinct values for low-cardinality text columns, matched against the
-   question's literals. Not built: it is a real design change, and the index
-   must be cached per database or it will dominate dataset build time.
+4. **DONE (M17).** Value linking is built, along with two bugs it uncovered;
+   the figure is now **42 questions (2.74%)**, down from a true 125. What
+   remains is a semantic long tail needing an embedding or LLM linker, which
+   is a different project. One note for whoever picks it up: the index covers
+   TEXT columns, so a value held in an INTEGER flag (`Charter = 1`) is still
+   invisible to it.
 5. **Reasoning-token accounting is unverified** (M9). Needs
    `completion_tokens_details` stored in `generations.jsonl`.
 6. `results/RESULTS.md`'s **latency column mixes cost models** -- hosted API

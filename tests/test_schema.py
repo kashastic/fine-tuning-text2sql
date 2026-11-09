@@ -250,3 +250,61 @@ def test_a_stronger_match_beats_an_earlier_weaker_one(tmp_path):
         schema.tables["t"], "what is the eligible rate", max_columns=3
     )]
     assert "eligible_rate" in kept, "the strongest match lost to schema position"
+
+
+def test_an_inbound_foreign_key_target_survives_the_budget(catalog_db):
+    """`cards.uuid` is a join key but not a primary key.
+
+    `legalities.uuid REFERENCES cards(uuid)` declares the constraint on
+    `legalities`, so protecting only primary keys and a table's *own* foreign
+    keys leaves `cards.uuid` competing as an ordinary column -- and losing,
+    since nothing in a question about rarity resembles "uuid". The prompt then
+    shows both tables and no way to join them. This was 59 of BIRD dev's
+    remaining recall losses.
+    """
+    schema = database_schema(str(catalog_db))
+    cards = schema.tables["cards"]
+    assert "uuid" in cards.inbound_keys
+
+    kept = {
+        c.name
+        for c in select_relevant_columns(
+            cards, "List the mythic rarity cards banned in gladiator format", "",
+            max_columns=3,
+        )
+    }
+    assert "uuid" in kept, "the join key must survive trimming"
+
+
+def test_table_selection_tolerates_an_inflected_question_word(catalog_db):
+    """"ruling" must reach a table called `rulings`.
+
+    Table scoring used exact token equality while column scoring accepted a
+    4-character shared prefix, so `race != races` dropped whole tables --
+    strictly worse than dropping a column, since no column tier can recover
+    a table that is not in the prompt.
+    """
+    schema = database_schema(str(catalog_db))
+    # "ruling" names no column here, so `rulings` can only be reached through
+    # its own name. Under exact-token scoring nothing matches at all and the
+    # selector falls back to the widest table, `cards`.
+    chosen = select_relevant_tables(schema, "show me each ruling", "", max_tables=1)
+    assert chosen == ["rulings"]
+
+
+def test_a_column_named_only_by_its_values_is_kept(catalog_db):
+    """Value linking: "Zendikar" is a value of `flavor`, not a column name."""
+    from text2sql.values import columns_matching_values
+
+    hits = columns_matching_values(str(catalog_db), "cards with Zendikar flavor text")
+    assert "cards.flavor" in hits
+
+    cards = database_schema(str(catalog_db)).tables["cards"]
+    kept = {
+        c.name
+        for c in select_relevant_columns(
+            cards, "which cards come from Zendikar?", "",
+            max_columns=2, value_columns={"flavor"},
+        )
+    }
+    assert "flavor" in kept

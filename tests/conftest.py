@@ -66,6 +66,57 @@ INSERT INTO book VALUES (1, 'Solaris', 1, 1961), (2, 'Ficciones', 2, 1944);
 """
 
 
+# Shaped after BIRD's `card_games`, which is where the two sharpest schema
+# bugs showed up: the join key is NOT the primary key (so protecting only
+# primary and outbound foreign keys drops it), the table is wide enough for
+# the column budget to bite, and `flavor` holds values a question would name
+# without ever resembling the column's name.
+CATALOG_DDL = """
+CREATE TABLE cards (
+    id INTEGER PRIMARY KEY,
+    uuid TEXT,
+    name TEXT,
+    rarity TEXT,
+    flavor TEXT,
+    artist TEXT,
+    layout TEXT,
+    border TEXT,
+    frame TEXT,
+    watermark TEXT
+);
+CREATE TABLE legalities (
+    id INTEGER PRIMARY KEY,
+    uuid TEXT,
+    format TEXT,
+    status TEXT,
+    FOREIGN KEY (uuid) REFERENCES cards(uuid)
+);
+INSERT INTO cards VALUES
+    (1, 'aaa-111', 'Black Lotus', 'mythic', 'Zendikar', 'Chris Rahn',
+     'normal', 'black', '2015', 'none'),
+    (2, 'bbb-222', 'Shock', 'common', 'Dominaria', 'Jim Pavelec',
+     'normal', 'black', '2015', 'none');
+CREATE TABLE rulings (
+    id INTEGER PRIMARY KEY,
+    uuid TEXT,
+    comment TEXT,
+    FOREIGN KEY (uuid) REFERENCES cards(uuid)
+);
+INSERT INTO legalities VALUES
+    (1, 'aaa-111', 'gladiator', 'Banned'),
+    (2, 'bbb-222', 'commander', 'Legal');
+INSERT INTO rulings VALUES
+    (1, 'aaa-111', 'Taps for three mana'),
+    (2, 'bbb-222', 'Deals two damage');
+"""
+
+
+@pytest.fixture(scope="session")
+def catalog_db(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    root = tmp_path_factory.mktemp("catalog")
+    return _build_db(root / "catalog" / "catalog.sqlite", CATALOG_DDL)
+
+
 def _build_db(path: Path, ddl: str) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)

@@ -53,6 +53,15 @@ class Table:
     ddl: str
     columns: list[Column] = field(default_factory=list)
     foreign_keys: list[tuple[str, str, str]] = field(default_factory=list)  # (col, ref_table, ref_col)
+    # Columns of *this* table that other tables point at. A join needs both
+    # ends, and only one end is a foreign key: `legalities.uuid REFERENCES
+    # cards.uuid` makes `uuid` a key column of `cards` too, though `cards`
+    # declares no foreign key and its primary key is `id`. Without this,
+    # `cards.uuid` is scored as an ordinary column, loses the budget race,
+    # and every question joining `cards` to `legalities` or `rulings` gets a
+    # prompt in which the join cannot be written -- 59 of BIRD dev's
+    # remaining recall losses were this one column.
+    inbound_keys: set[str] = field(default_factory=set)
 
 
 @dataclass(slots=True)
@@ -108,6 +117,20 @@ def database_schema(db_path: str) -> DatabaseSchema:
                 # (id, seq, ref_table, from_col, to_col, on_update, on_delete, match)
                 table.foreign_keys.append((fk[3], fk[2], fk[4]))
             schema.tables[name] = table
+
+    # Second pass: a foreign key names a column in *another* table, so the
+    # inbound side can only be filled in once every table has been read.
+    for table in schema.tables.values():
+        for _col, ref_table, ref_col in table.foreign_keys:
+            target = schema.tables.get(ref_table)
+            if target is None:
+                continue
+            if ref_col:
+                target.inbound_keys.add(ref_col)
+            else:
+                # `REFERENCES parent` with no column list means the parent's
+                # primary key; PRAGMA reports that target as NULL.
+                target.inbound_keys.update(c.name for c in target.columns if c.pk)
     return schema
 
 
@@ -152,13 +175,45 @@ def _name_tokens(name: str) -> set[str]:
     return {p.lower() for p in parts if p}
 
 
-def _table_score(table: Table, question_tokens: set[str]) -> float:
+def value_columns_for(table_name: str, value_hits: set[str]) -> set[str]:
+    """The `{"table.column"}` hits that belong to one table, as column names."""
+    prefix = f"{table_name}."
+    return {h[len(prefix):] for h in value_hits if h.startswith(prefix)}
+
+
+def _table_score(
+    table: Table,
+    question_tokens: set[str],
+    value_columns: set[str] = frozenset(),
+) -> float:
+    """How likely is this table to be needed? Higher is better.
+
+    Three signals, weighted by how much each is worth in practice:
+
+    * the question **quotes this table's contents** (value linking) -- the
+      strongest signal there is, because the question is naming data that
+      only exists here. "Lucas di Grassi's Q1 result" contains no word
+      resembling `drivers`, and no name-based score can reach that table.
+    * a name overlap, exactly or by the same 4-character prefix rule the
+      column tier uses. Exact-only scoring is why "race No. 901" missed the
+      `races` table: `race != races` and the whole table was dropped, which
+      is strictly worse than dropping a column.
+    * a column-name overlap, worth less than a table-name one.
+    """
     score = 0.0
-    if _name_tokens(table.name) & question_tokens:
+    table_tokens = _name_tokens(table.name)
+    if table_tokens & question_tokens:
         score += 2.0
+    elif any(_tokens_match(t, q) for t in table_tokens for q in question_tokens):
+        score += 1.0
     for col in table.columns:
-        if _name_tokens(col.name) & question_tokens:
+        col_tokens = _name_tokens(col.name)
+        if col_tokens & question_tokens:
             score += 1.0
+        elif any(_tokens_match(t, q) for t in col_tokens for q in question_tokens):
+            score += 0.5
+        if col.name in value_columns:
+            score += 3.0
     return score
 
 
@@ -211,17 +266,25 @@ def select_relevant_columns(
     question: str,
     evidence: str = "",
     max_columns: int = 0,
+    value_columns: set[str] = frozenset(),
 ) -> list[Column]:
     """Pick the columns worth showing for one table, in schema order.
 
     Three tiers, because measuring which needed columns got dropped showed
     two distinct causes (see docs/MEASUREMENTS.md, M4):
 
-    1. **Keys** -- primary and foreign -- are never dropped. Without them a
-       join stops being expressible, and an unanswerable prompt teaches GRPO
-       nothing.
-    2. **Columns the question or evidence names verbatim** are never dropped
-       either. These were the single largest recoverable loss: 54 of 165
+    1. **Keys** -- primary, outbound foreign, and *inbound* foreign (columns
+       other tables point at) -- are never dropped. Without them a join stops
+       being expressible, and an unanswerable prompt teaches GRPO nothing.
+       The inbound half matters as much as the outbound: a join has two ends
+       and only one of them declares the constraint.
+    2. **Columns the question names -- by name or by content.** A column the
+       question spells out verbatim is never dropped, and neither is one whose
+       *values* the question quotes (`value_columns`, from
+       `text2sql.values`). The second is the larger class: "the school run by
+       Kacey Gibson" needs `AdmFName1`, and nothing about that question
+       resembles that column's name.
+       Verbatim naming alone These were the single largest recoverable loss: 54 of 165
        missing columns were *explicitly named in the question* and still
        thrown away, because the old code filled matches in schema order and
        ran out of budget. A name the user typed is the strongest signal
@@ -241,11 +304,14 @@ def select_relevant_columns(
     haystack = f"{question} {evidence}".lower()
     question_tokens = _tokens(f"{question} {evidence}")
     key_names = {col for col, _ref_table, _ref_col in table.foreign_keys}
+    key_names |= table.inbound_keys
 
     required: set[str] = set()
     scored: list[tuple[int, int, str]] = []
     for position, col in enumerate(table.columns):
-        if col.pk or col.name in key_names or _phrase_hits(col.name, haystack):
+        if (col.pk or col.name in key_names
+                or _phrase_hits(col.name, haystack)
+                or col.name in value_columns):
             required.add(col.name)
             continue
         score = _match_score(col.name, question_tokens)
@@ -270,6 +336,7 @@ def select_relevant_tables(
     evidence: str = "",
     max_tables: int = 8,
     include_fk_neighbours: bool = True,
+    value_hits: set[str] = frozenset(),
 ) -> list[str]:
     """Pick the tables worth putting in the prompt, largest schemas first.
 
@@ -282,7 +349,8 @@ def select_relevant_tables(
 
     question_tokens = _tokens(f"{question} {evidence}")
     scored = sorted(
-        ((_table_score(t, question_tokens), name) for name, t in schema.tables.items()),
+        ((_table_score(t, question_tokens, value_columns_for(name, value_hits)), name)
+         for name, t in schema.tables.items()),
         key=lambda pair: (-pair[0], pair[1]),
     )
     kept = [name for score, name in scored if score > 0][:max_tables]
@@ -343,6 +411,7 @@ def format_schema(
     question: str = "",
     evidence: str = "",
     max_columns: int = 0,
+    value_hits: set[str] = frozenset(),
 ) -> str:
     """Render the schema as the prompt sees it."""
     names = tables if tables is not None else schema.table_names
@@ -351,7 +420,10 @@ def format_schema(
         table = schema.tables.get(name)
         if table is None:
             continue
-        columns = select_relevant_columns(table, question, evidence, max_columns=max_columns)
+        columns = select_relevant_columns(
+            table, question, evidence, max_columns=max_columns,
+            value_columns=value_columns_for(name, value_hits),
+        )
         trimmed = len(columns) < len(table.columns)
         if use_raw_ddl and table.ddl and not trimmed:
             block = table.ddl.rstrip().rstrip(";") + ";"
@@ -376,10 +448,31 @@ def schema_for_example(
     max_tables: int = 8,
     n_sample_values: int = 0,
     max_columns: int = 0,
+    link_values: bool = True,
 ) -> str:
-    """The one call the prompt builder needs: trimmed, rendered schema text."""
+    """The one call the prompt builder needs: trimmed, rendered schema text.
+
+    `link_values` turns on value linking, which asks the database which
+    columns actually contain the literals the question spells out. It costs
+    one indexing pass per database, cached on disk; see `text2sql.values`.
+    Pass False to get name-based selection only -- that is the comparison
+    the measurement in docs/MEASUREMENTS.md (M17) is against, and the escape
+    hatch if a database cannot be read.
+    """
     schema = database_schema(db_path)
-    tables = select_relevant_tables(schema, question, evidence, max_tables=max_tables)
+    value_hits: set[str] = frozenset()
+    if link_values:
+        # Imported here, not at module scope: text2sql.values reads schemas,
+        # so a top-level import would be circular.
+        from .values import columns_matching_values
+
+        try:
+            value_hits = columns_matching_values(db_path, question, evidence)
+        except Exception:  # noqa: BLE001 - prompts must still build
+            value_hits = frozenset()
+    tables = select_relevant_tables(
+        schema, question, evidence, max_tables=max_tables, value_hits=value_hits
+    )
     return format_schema(
         schema,
         tables,
@@ -388,4 +481,5 @@ def schema_for_example(
         question=question,
         evidence=evidence,
         max_columns=max_columns,
+        value_hits=value_hits,
     )
