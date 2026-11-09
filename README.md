@@ -405,7 +405,11 @@ scripts/            download, build, generate, evaluate, train x2, merge,
                     schema_recall.py (what trimming costs and gains),
                     compare_runs.py (is a difference real, or this API's noise?)
 serve/              FastAPI service + Gradio demo
-tests/              109 tests on a fixture benchmark; no GPU, no downloads
+tests/              117 tests on a fixture benchmark; no GPU, no downloads.
+                    Six of them run train_sft.py and train_grpo.py end to end
+                    on a ~10M-param random Qwen3, on CPU, in ~25s -- a wiring
+                    check, not a quality one. They skip without the `train`
+                    extra installed.
 ```
 
 ## Reproduction

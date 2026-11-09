@@ -18,7 +18,7 @@ import sys
 from pathlib import Path
 
 import _bootstrap  # noqa: F401
-from _trainer_utils import describe_trainable, filter_kwargs
+from _trainer_utils import describe_trainable, dtype_kwargs, filter_kwargs
 from text2sql.config import dump_config, load_config
 
 
@@ -140,7 +140,7 @@ def main() -> int:
         "report_to": cfg.get_path("train.report_to", ["wandb"]),
         "model_init_kwargs": {
             "quantization_config": quant_config,
-            "dtype": cfg.get_path("model.dtype", "auto"),
+            **dtype_kwargs(cfg.get_path("model.dtype", "auto")),
             "device_map": cfg.get_path("model.device_map", "auto"),
             "attn_implementation": cfg.get_path("model.attn_implementation", "sdpa"),
         },

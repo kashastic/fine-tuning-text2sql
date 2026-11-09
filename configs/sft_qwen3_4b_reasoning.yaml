@@ -36,8 +36,10 @@ train:
   logging_steps: 10
   # Step-based, not epoch-based: two epochs give two validation points, which
   # cannot show a loss curve turning, and the last checkpoint is then the one
-  # you serve even if it overfit. ~9.4k train rows at effective batch 16 is
-  # ~590 steps/epoch, so every 100 steps gives ~12 eval points.
+  # you serve even if it overfit. 15,697 train rows at effective batch 16 is
+  # ~980 steps/epoch, so every 100 steps gives ~20 eval points over two
+  # epochs. (The 9.4k this once said was BIRD alone, before Spider's train
+  # split joined the mix -- see docs/MEASUREMENTS.md M14.)
   eval_strategy: steps
   eval_steps: 100
   save_strategy: steps          # must match eval_strategy for best-checkpoint

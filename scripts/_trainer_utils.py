@@ -27,6 +27,28 @@ def filter_kwargs(cls: type, values: dict[str, Any], label: str = "") -> dict[st
     return kept
 
 
+def dtype_kwargs(dtype: Any) -> dict[str, Any]:
+    """`{"dtype": ...}` or `{"torch_dtype": ...}`, whichever is understood.
+
+    transformers renamed `torch_dtype` to `dtype` in its 5.x line, and only
+    one spelling works per version -- the other reaches
+    `Qwen3ForCausalLM.__init__` as an unexpected keyword and raises. Because
+    the kwarg is forwarded into the model constructor rather than consumed by
+    `from_pretrained`, no signature inspection can see it, so this probes
+    `PretrainedConfig` instead: it carries whichever attribute its own
+    version uses.
+
+    This matters more than it looks. The failure lands *inside* trainer
+    construction, after the dataset has loaded and the config has been
+    validated, which on a rented GPU is a minute of billed time before
+    anything says what is wrong.
+    """
+    from transformers import PretrainedConfig
+
+    key = "torch_dtype" if hasattr(PretrainedConfig(), "torch_dtype") else "dtype"
+    return {key: dtype}
+
+
 def describe_trainable(model: Any) -> None:
     trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     total = sum(p.numel() for p in model.parameters())

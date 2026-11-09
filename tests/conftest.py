@@ -207,3 +207,50 @@ def shop_example(data_root: Path):
     from text2sql.data import load_dataset
 
     return load_dataset("bird", data_root=data_root, split="dev")[0]
+
+
+# The tokenizer the real runs use. Only its files are needed (not the 4B of
+# weights), and they are already in the HF cache on any machine that has run
+# `make recall --tokenizer`. Nothing here downloads.
+TOKENIZER_REPO = "Qwen/Qwen3-4B"
+
+
+@pytest.fixture(scope="session")
+def tiny_model(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """A randomly-initialised Qwen3 small enough to train on a laptop CPU.
+
+    The training scripts are the only part of this repo that a GPU-less
+    machine cannot exercise, which is exactly why they were the only part
+    never run: `--help` passing is not evidence that a config loads, that the
+    LoRA target modules match the architecture, or that an adapter lands on
+    disk. Those break in the first minute of a rented GPU, at $1.20/hour.
+
+    Same architecture (`Qwen3ForCausalLM`) and the same tokenizer as the real
+    model, so the chat template, the LoRA module names and the dataset
+    plumbing are the real ones. Two layers and a 64-wide hidden state, so it
+    is about 10M parameters instead of 4B. It is random, so it learns
+    nothing -- this fixture is for wiring, never for quality.
+    """
+    pytest.importorskip("torch")
+    transformers = pytest.importorskip("transformers")
+    try:
+        tokenizer = transformers.AutoTokenizer.from_pretrained(TOKENIZER_REPO)
+    except Exception as exc:  # noqa: BLE001 - offline or uncached is a skip
+        pytest.skip(f"{TOKENIZER_REPO} tokenizer not available locally: {exc}")
+
+    config = transformers.Qwen3Config(
+        vocab_size=len(tokenizer),
+        hidden_size=64,
+        intermediate_size=128,
+        num_hidden_layers=2,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        head_dim=16,
+        max_position_embeddings=1024,
+        tie_word_embeddings=True,
+    )
+    model = transformers.Qwen3ForCausalLM(config)
+    path = tmp_path_factory.mktemp("tiny_qwen3")
+    model.save_pretrained(path)
+    tokenizer.save_pretrained(path)
+    return path

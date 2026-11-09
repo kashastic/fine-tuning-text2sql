@@ -19,7 +19,7 @@ import sys
 from pathlib import Path
 
 import _bootstrap  # noqa: F401
-from _trainer_utils import describe_trainable, filter_kwargs
+from _trainer_utils import describe_trainable, dtype_kwargs, filter_kwargs
 from text2sql.config import dump_config, load_config
 from text2sql.rewards import RewardWeights, execution_reward, format_reward
 from text2sql.sql_exec import ComparisonMode
@@ -38,6 +38,19 @@ def main() -> int:
     if not adapter and not args.allow_base_model:
         print("[fail] model.adapter is not set. GRPO from a base model stalls at "
               "zero reward; point it at an SFT adapter, or pass --allow-base-model.")
+        return 1
+    # The shipped config names an adapter that does not exist until SFT has
+    # run, so the likely mistake is ordering, not a missing setting. Checked
+    # here, before the imports: otherwise the 4B model loads first and peft
+    # raises several GPU-minutes later.
+    if adapter and not Path(adapter).exists():
+        print(f"[fail] model.adapter {adapter!r} does not exist. Run SFT first "
+              f"(`make sft`), or point model.adapter at an existing adapter.")
+        return 1
+    if adapter and not (Path(adapter) / "adapter_config.json").exists():
+        print(f"[fail] {adapter!r} exists but holds no adapter "
+              f"(no adapter_config.json). Point model.adapter at the "
+              f"`adapter/` directory a training run wrote.")
         return 1
 
     import torch
@@ -88,7 +101,7 @@ def main() -> int:
         tokenizer.pad_token = tokenizer.eos_token
 
     load_kwargs: dict = {
-        "dtype": cfg.get_path("model.dtype", "auto"),
+        **dtype_kwargs(cfg.get_path("model.dtype", "auto")),
         "device_map": cfg.get_path("model.device_map", "auto"),
         "attn_implementation": cfg.get_path("model.attn_implementation", "sdpa"),
     }

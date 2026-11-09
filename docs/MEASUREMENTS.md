@@ -707,6 +707,54 @@ better of the two would score **66.88%**. That 33.12% shared-failure core is
 the target for fine-tuning, and it is not addressable by spending more on a
 prompted model.
 
+### M20 — Running the trainers found two bugs that `--help` could not (measured)
+
+Both training scripts had never been executed. The suite checked that their
+`--help` worked, which is not evidence that a config loads, that LoRA attaches
+to anything, or that an adapter gets written. They are now run end to end on a
+~10M-parameter randomly-initialised Qwen3 over the fixture benchmark, on CPU,
+in about 25 seconds (`tests/test_training.py`, 6 tests).
+
+It is a **wiring** test and claims nothing else. The model is random, so it
+says nothing about quality; CPU says nothing about memory or throughput; and
+`bitsandbytes` is CUDA-only, so **`load_in_4bit` and `paged_adamw_8bit` are
+switched off and remain untested** -- which is exactly why the first real GPU
+run should use a tiny subset.
+
+**Bug 1: both trainers would have crashed on the declared minimum
+transformers.** They passed `dtype=` to `from_pretrained`; transformers
+renamed `torch_dtype` to `dtype` only in its 5.x line, and `pyproject.toml`
+declares `transformers>=4.52`. On 4.52 the kwarg reaches
+`Qwen3ForCausalLM.__init__` as an unexpected keyword and raises -- *inside*
+`SFTTrainer` construction, after the dataset has loaded, so the failure
+arrives a minute into a billed GPU hour. Fixed with `dtype_kwargs()` in
+`scripts/_trainer_utils.py`, which probes `PretrainedConfig` for whichever
+spelling the installed version carries. Signature inspection cannot find this
+one: the kwarg is forwarded into the model constructor rather than consumed by
+`from_pretrained`.
+
+**Bug 2: `make grpo` before `make sft` failed in the wrong place.**
+`configs/grpo_qwen3_4b.yaml` ships `adapter: outputs/sft-plain/adapter`, a
+path that does not exist until SFT has run. The script carefully refused to
+start when `model.adapter` was *unset* -- the documented silent-failure
+guard -- but never checked the directory existed, so the likely mistake
+(wrong order) loaded the 4B model first and then raised inside peft. Now
+checked before the imports, with a message naming `make sft`. A directory
+that exists but holds no `adapter_config.json` is caught separately, since
+`outputs/sft-plain` and `outputs/sft-plain/adapter` are easy to confuse.
+
+Note on semantics settled while fixing it: `--allow-base-model` clears the
+refusal to train without an adapter, but a *configured yet missing* adapter
+is still an error. Training from the base model requires both the flag and
+`model.adapter=null`, because a missing configured adapter is an ordering
+mistake rather than an intention.
+
+**Also corrected:** both SFT configs justified `eval_steps: 100` with "~9.4k
+train rows ... ~590 steps/epoch, ~12 eval points". That was BIRD alone,
+before Spider's train split joined the mix (M14). It is 15,697 rows, ~980
+steps/epoch and ~20 eval points over two epochs. The setting is still right;
+its stated reason was stale.
+
 ## 3. Decisions
 
 **D1 — Always quote identifiers.** Quoting only unusual-looking names made
@@ -910,6 +958,10 @@ Ordered by what would change a conclusion, not by effort.
 2. **The zero-shot Qwen3-4B row is unmeasured.** It needs a GPU, and it is
    the number the "+10 EX" success criterion is measured *against* -- the
    project cannot state its headline result without it.
+2b. **4-bit quantisation and `paged_adamw_8bit` are untested** (M20).
+   `bitsandbytes` is CUDA-only, so the CPU smoke tests switch both off; they
+   are the two settings a real run exercises first. Run the first SFT on a
+   small subset for this reason, not for cost.
 3. **Every future ablation needs k runs, not one** (M12): the single-run band
    is +/-1.5 EX points and nothing averages over runs. `--seed` is wired
    through but best-effort.
